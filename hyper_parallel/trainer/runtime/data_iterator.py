@@ -1,4 +1,5 @@
 # Copyright 2025-2026 Bytedance Ltd. and/or its affiliates
+# Copyright 2026 Huawei Technologies Co., Ltd
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -11,6 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+# ============================================================================
 
 """Trainer-side dataloader iteration helpers.
 
@@ -27,7 +29,7 @@ __all__ = [
 import logging
 import queue
 import threading
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 
 logger = logging.getLogger(__name__)
@@ -51,14 +53,20 @@ class BackgroundPrefetcher:
         self.thread.daemon = True
         self.thread.start()
 
-    def _worker(self):
+    def _worker(self) -> None:
         """Prefetch data and capture dataloader state in a background thread."""
         try:
             while not self.stop_event.is_set():
                 try:
                     item = next(self.iterator)
                 except StopIteration:
-                    self.queue.put((StopIteration, None))
+                    if not self.stop_event.is_set():
+                        self.queue.put((StopIteration, None))
+                    break
+
+                # next() cannot be interrupted, so discard a batch returned after
+                # shutdown instead of retaining it in the queue.
+                if self.stop_event.is_set():
                     break
 
                 # Ensure we capture the state so that subsequent dataloader advances
@@ -68,7 +76,26 @@ class BackgroundPrefetcher:
                 self.queue.put((item, state))
         # The worker must transfer any producer failure back to the training thread.
         except Exception as exc:  # pylint: disable=broad-exception-caught
-            self.queue.put((exc, None))
+            if not self.stop_event.is_set():
+                self.queue.put((exc, None))
+        finally:
+            if self.stop_event.is_set():
+                self._cleanup_after_stop()
+
+    def _drain_queue(self) -> None:
+        """Release results retained by the prefetch queue."""
+        while True:
+            try:
+                self.queue.get_nowait()
+            except queue.Empty:
+                return
+
+    def _cleanup_after_stop(self) -> None:
+        """Release queued results and live dataloader references after stopping."""
+        self._drain_queue()
+        self.iterator = None
+        self.dataloader = None
+        self.original_state_dict = None
 
     def __iter__(self) -> "BackgroundPrefetcher":
         """Return this prefetcher as its own iterator."""
@@ -99,18 +126,25 @@ class BackgroundPrefetcher:
             return self.original_state_dict()
         return {}
 
-    def stop(self, timeout: float = 5.0) -> None:
-        """Stop the background worker and wait up to ``timeout`` seconds."""
+    def stop(self, timeout: Optional[float] = 5.0) -> bool:
+        """Stop the background worker and release its dataloader references.
+
+        Args:
+            timeout: Maximum seconds to wait. ``None`` waits until the worker exits.
+
+        Returns:
+            Whether the worker terminated within the requested timeout.
+        """
         self.stop_event.set()
-        try:
-            while not self.queue.empty():
-                self.queue.get_nowait()
-        except queue.Empty:
-            pass
+        self._drain_queue()
         if self.thread.is_alive():
             self.thread.join(timeout=timeout)
-            if self.thread.is_alive():
-                logger.warning("BackgroundPrefetcher worker thread did not terminate within timeout.")
+        if self.thread.is_alive():
+            logger.warning("BackgroundPrefetcher worker thread did not terminate within timeout.")
+            return False
+
+        self._cleanup_after_stop()
+        return True
 
 
 class HyperIter:
@@ -135,10 +169,18 @@ class HyperIter:
         """Return the next batch from the underlying iterator."""
         return next(self.iterator)
 
-    def stop(self, timeout: float = 5.0) -> None:
-        """Stop the background prefetch worker when one is active."""
+    def stop(self, timeout: Optional[float] = 5.0) -> bool:
+        """Stop the background prefetch worker when one is active.
+
+        Args:
+            timeout: Maximum seconds to wait. ``None`` waits until the worker exits.
+
+        Returns:
+            Whether the worker is stopped, or ``True`` when prefetching is disabled.
+        """
         if self.use_background_prefetcher and hasattr(self.iterator, "stop"):
-            self.iterator.stop(timeout=timeout)
+            return self.iterator.stop(timeout=timeout)
+        return True
 
     def state_dict(self) -> Dict[str, Any]:
         """Return the underlying dataloader or prefetcher state for checkpointing."""

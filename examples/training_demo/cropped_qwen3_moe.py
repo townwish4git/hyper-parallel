@@ -17,7 +17,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, fields, replace
-from typing import Any
+from typing import Any, Literal
 
 from transformers import AutoConfig, PreTrainedModel
 
@@ -41,6 +41,8 @@ class CroppedQwen3MoeOptions:
         compile_config: Optional Trainer-provided compile configuration.
         activation_checkpoint: Activation checkpoint mode.
         activation_swap: Activation swap mode.
+        swap_inputs: Offload checkpoint inputs to CPU when enabled.
+        model_init_dtype: Final model parameter dtype applied during construction.
     """
 
     num_hidden_layers: int = 4
@@ -53,6 +55,8 @@ class CroppedQwen3MoeOptions:
     compile_config: CompileConfig | dict[str, Any] | None = None
     activation_checkpoint: str | None = None
     activation_swap: str = "none"
+    swap_inputs: bool = False
+    model_init_dtype: Literal["float16", "bfloat16", "float32"] | None = None
 
 
 def _resolve_build_options(
@@ -143,4 +147,6 @@ def build_cropped_qwen3_moe(
         compile_config=options.compile_config,
         activation_checkpoint=options.activation_checkpoint,
         activation_swap=options.activation_swap,
+        swap_inputs=options.swap_inputs,
+        model_init_dtype=options.model_init_dtype,
     )

@@ -76,6 +76,7 @@ class MuonPostUpdateContext:
 
 
 _MUON_ADVANCED_DEFAULTS: Dict[str, Any] = {
+    "ns_implementation": "standard",
     "ns_coefficients": None,
     "ns_epsilon": 1e-10,
     "zeropower_fn": None,
@@ -92,6 +93,7 @@ _MUON_ADVANCED_DEFAULTS: Dict[str, Any] = {
 class _MuonAdvancedOptions:
     """Validated low-frequency Muon options."""
 
+    ns_implementation: str
     ns_coefficients: Optional[Sequence[Tuple[float, float, float]]]
     ns_epsilon: float
     zeropower_fn: Optional[Callable[..., torch.Tensor]]
@@ -122,9 +124,27 @@ def zeropower_via_newtonschulz5(
         ns_variant: str = "asym5",
         epsilon: float = 1e-10,
         ns_coefficients: Optional[Sequence[Tuple[float, float, float]]] = None,
+        implementation: str = "standard",
 ) -> torch.Tensor:
-    """Newton-Schulz orthogonalization with preallocated matmul buffers."""
+    """Newton-Schulz orthogonalization with preallocated matmul buffers.
+
+    Args:
+        ns_inputs: Matrices with trailing row and column dimensions.
+        steps: Number of polynomial iterations.
+        ns_variant: Coefficient schedule name.
+        epsilon: Denominator stabilization added to the norm.
+        ns_coefficients: Coefficients for the custom schedule.
+        implementation: Standard or opt-in fused matrix updates.
+
+    Returns:
+        Orthogonalized matrices with the input shape and dtype.
+    """
+    if implementation not in ("standard", "standard_fused"):
+        raise ValueError(f"Unknown NS implementation: {implementation!r}")
+    original_shape = ns_inputs.shape
     mat_x = ns_inputs
+    if implementation == "standard_fused" and mat_x.ndim > 3:
+        mat_x = mat_x.reshape(-1, *mat_x.shape[-2:])
     transposed = ns_inputs.size(-2) > ns_inputs.size(-1)
     if transposed:
         mat_x = mat_x.mT
@@ -155,6 +175,14 @@ def zeropower_via_newtonschulz5(
         )
 
     for coeff_a, coeff_b, coeff_c in step_coeffs:
+        if implementation == "standard_fused":
+            torch.matmul(mat_x, mat_x.mT, out=buf_a)
+            multiply_add = torch.addmm if mat_x.ndim == 2 else torch.baddbmm
+            multiply_add(buf_a, buf_a, buf_a, beta=coeff_b, alpha=coeff_c, out=buf_b)
+            multiply_add(mat_x, buf_b, mat_x, beta=coeff_a, out=buf_c)
+            # Keep the output disjoint from both matrix operands.
+            mat_x, buf_c = buf_c, mat_x
+            continue
         torch.matmul(mat_x, mat_x.mT, out=buf_a)
         torch.matmul(buf_a, buf_a, out=buf_b)
         buf_a.mul_(coeff_b)
@@ -168,7 +196,7 @@ def zeropower_via_newtonschulz5(
     if transposed:
         mat_x = mat_x.mT
 
-    return mat_x
+    return mat_x.reshape(original_shape)
 
 
 def compute_muon_slice_scale(
@@ -176,7 +204,16 @@ def compute_muon_slice_scale(
         matched_adamw_rms: float,
         zero_rms_scale_mode: str = "zero",
 ) -> float:
-    """Compute Muon scale from the logical matrix dims of a reshaped slice."""
+    """Compute Muon scale from the logical matrix dims of a reshaped slice.
+
+    Args:
+        slice_tensor: Logical matrix or batch of matrices.
+        matched_adamw_rms: Target update RMS scale.
+        zero_rms_scale_mode: Behavior when the target scale is zero.
+
+    Returns:
+        Scalar multiplier for this slice.
+    """
     if not matched_adamw_rms:
         return 1.0 if zero_rms_scale_mode == "use_lr" else 0.0
     shape = tuple(slice_tensor.shape)
@@ -221,6 +258,7 @@ class Muon(BaseDistributedOptimizer):
             nesterov: Whether to use Nesterov momentum.
             ns_steps: Newton-Schulz iteration count.
             ns_variant: Newton-Schulz coefficient variant.
+            ns_implementation: Standard or opt-in standard_fused matrix updates.
             ns_coefficients: Optional custom Newton-Schulz coefficients.
             ns_epsilon: Numerical stability term used during normalization.
             zeropower_fn: Optional Newton-Schulz implementation override.
@@ -233,6 +271,8 @@ class Muon(BaseDistributedOptimizer):
             hsdp_replica_count: Optional optimizer-state replica group size.
         """
         advanced = _resolve_muon_advanced_options(advanced_options)
+        if advanced.ns_implementation not in ("standard", "standard_fused"):
+            raise ValueError(f"Unknown NS implementation: {advanced.ns_implementation!r}")
         if ns_variant not in ("legacy", "asym5", "custom"):
             raise ValueError(
                 f"ns_variant must be 'legacy', 'asym5', or 'custom', got {ns_variant!r}"
@@ -259,6 +299,7 @@ class Muon(BaseDistributedOptimizer):
             "nesterov": nesterov,
             "ns_steps": ns_steps,
             "ns_variant": ns_variant,
+            "ns_implementation": advanced.ns_implementation,
             "ns_coefficients": normalized_coefficients,
             "ns_epsilon": advanced.ns_epsilon,
             "zero_rms_scale_mode": advanced.zero_rms_scale_mode,
@@ -354,20 +395,8 @@ class Muon(BaseDistributedOptimizer):
         no_comm_ns: Dict[int, Dict] = {}
         for group_idx in range(num_groups):
             info = self._hsdp_assignment_batches.get(group_idx)
-            if not info:
-                # No HSDP info — all params are no_comm.
-                unshard_params = self.unshard_params_by_group.get(group_idx, [])
-                no_comm_ns[group_idx] = self._update_muon_momentum(
-                    self.param_groups[group_idx], unshard_params
-                )
-            else:
-                no_comm_params = info.get("no_comm", [])
-                if no_comm_params:
-                    no_comm_ns[group_idx] = self._update_muon_momentum(
-                        self.param_groups[group_idx], no_comm_params
-                    )
-                else:
-                    no_comm_ns[group_idx] = {}
+            params = info.get("no_comm", []) if info else self.unshard_params_by_group.get(group_idx, [])
+            no_comm_ns[group_idx] = self._update_muon_momentum(self.param_groups[group_idx], params)
 
         # Process no-comm params.
         for group_idx in range(num_groups):
@@ -377,17 +406,7 @@ class Muon(BaseDistributedOptimizer):
                 if self.post_update_fn is not None:
                     self._run_post_update_fn(group, no_comm_ns[group_idx].keys())
 
-        # Flatten nested batch into a linear schedule.
-        group_linear_batches: Dict[int, List[HSDPGroupAssignment]] = {}
-        max_num_batches = 0
-        for group_idx in range(num_groups):
-            info = self._hsdp_assignment_batches.get(group_idx)
-            linear_batches = []
-            if info:
-                for bg in info.get("batch_groups", []):
-                    linear_batches.extend(bg.get("sub_batches", []))
-            group_linear_batches[group_idx] = linear_batches
-            max_num_batches = max(max_num_batches, len(linear_batches))
+        group_linear_batches, max_num_batches = self._linear_assignment_batches(num_groups)
 
         # Process batches: compute momentum per-batch for owned params only (HSDP de-duplication).
         for batch_idx in range(max_num_batches):
@@ -417,6 +436,21 @@ class Muon(BaseDistributedOptimizer):
 
         broadcaster.wait_all()
         return loss
+
+    def _linear_assignment_batches(self, num_groups):
+        """Flatten assignment groups without changing their collective order."""
+        group_linear_batches: Dict[int, List[HSDPGroupAssignment]] = {}
+        max_num_batches = 0
+        for group_idx in range(num_groups):
+            info = self._hsdp_assignment_batches.get(group_idx)
+            linear_batches = []
+            if info:
+                for bg in info.get("batch_groups", []):
+                    linear_batches.extend(bg.get("sub_batches", []))
+            group_linear_batches[group_idx] = linear_batches
+            max_num_batches = max(max_num_batches, len(linear_batches))
+
+        return group_linear_batches, max_num_batches
 
     def _run_post_update_fn(
             self,
@@ -785,7 +819,12 @@ class Muon(BaseDistributedOptimizer):
         _, reshaped_inputs = self._reshape_ns_input(param, working_input)
 
         def restore_view_updates(updates: List[torch.Tensor], output: torch.Tensor) -> None:
-            """Write reshaped NS updates back into the views and the working input."""
+            """Write reshaped NS updates back into the views and the working input.
+
+            Args:
+                updates: Updates matching the prepared views.
+                output: Destination for the restored working input.
+            """
             for reshaped_input, update in zip(reshaped_inputs, updates):
                 reshaped_input.copy_(update.contiguous().view_as(reshaped_input))
             if output.untyped_storage().data_ptr() != working_input.untyped_storage().data_ptr():
@@ -822,6 +861,7 @@ class Muon(BaseDistributedOptimizer):
             ns_variant: str = "asym5",
             ns_coefficients: Optional[Sequence[Tuple[float, float, float]]] = None,
             ns_epsilon: float = 1e-10,
+        ns_implementation: str = "standard",
     ) -> List[torch.Tensor]:
         """Run batched NS on mixed-shape tensors and restore their original shapes."""
 
@@ -864,6 +904,7 @@ class Muon(BaseDistributedOptimizer):
                 ns_variant=ns_variant,
                 epsilon=ns_epsilon,
                 ns_coefficients=ns_coefficients,
+                implementation=ns_implementation,
             )
         else:
             merged_update = self.zeropower_fn(merged_input, steps=ns_steps)
@@ -963,7 +1004,8 @@ class Muon(BaseDistributedOptimizer):
                 )
         for tensor_list in state["reshape_groups"].values():
             updates = self._compute_batched_ns_outputs_for_tensors(
-                tensor_list, group["ns_steps"], group["ns_variant"], group["ns_coefficients"], group["ns_epsilon"]
+                tensor_list, group["ns_steps"], group["ns_variant"], group["ns_coefficients"], group["ns_epsilon"],
+                ns_implementation=group.get("ns_implementation", "standard")
             )
             for reshaped_input, update in zip(tensor_list, updates):
                 scale = compute_muon_slice_scale(
@@ -1029,6 +1071,7 @@ class Muon(BaseDistributedOptimizer):
                 ns_variant=group["ns_variant"],
                 ns_coefficients=group["ns_coefficients"],
                 ns_epsilon=group["ns_epsilon"],
+                ns_implementation=group.get("ns_implementation", "standard"),
             )
 
             # Scale updates.

@@ -28,6 +28,7 @@ import torch
 import torch_npu
 
 from hyper_parallel.core.optimizer.muon import zeropower_via_newtonschulz5
+from hyper_parallel.core.optimizer.muon_pointwise import _momentum_update_triton
 
 
 def _errors(actual, expected):
@@ -87,16 +88,69 @@ def _ns_cases(args):
     return rows
 
 
+
+def _momentum_reference(grads, bufs, momentum1, momentum2, nesterov):
+    updates = torch._foreach_add(grads, bufs, alpha=momentum1)
+    torch._foreach_mul_(bufs, momentum2)
+    torch._foreach_add_(bufs, grads)
+    if nesterov:
+        torch._foreach_mul_(updates, momentum1)
+        torch._foreach_add_(updates, grads)
+    return [update.to(torch.bfloat16) for update in updates]
+
+
+
+def _merge_errors(metrics, actual, expected):
+    for target, reference in zip(actual, expected):
+        measured = _errors(target, reference)
+        metrics["relative_l2"] = max(metrics["relative_l2"], measured["relative_l2"])
+        metrics["max_abs"] = max(metrics["max_abs"], measured["max_abs"])
+        metrics["finite"] &= measured["finite"]
+
+def _momentum_cases(args):
+    rows = []
+    for dtype in (torch.float32, torch.float16, torch.bfloat16):
+        for shape in ((256, 1024), (1024, 4096)):
+            for nesterov in (False, True):
+                torch.manual_seed(18)
+                grads = [torch.randn(shape, dtype=dtype, device="npu") for _ in range(4)]
+                old_grads = [grad.clone() for grad in grads]
+                bufs = [torch.zeros_like(grad) for grad in grads]
+                candidate_bufs = [buf.clone() for buf in bufs]
+                error = {"relative_l2": 0.0, "max_abs": 0.0, "finite": True}
+                state_error = dict(error)
+                for _ in range(20):
+                    expected = _momentum_reference(grads, bufs, .95, .85, nesterov)
+                    actual = _momentum_update_triton(grads, candidate_bufs, .95, .85, nesterov)
+                    _merge_errors(error, actual, expected)
+                    _merge_errors(state_error, candidate_bufs, bufs)
+                for grad, original in zip(grads, old_grads):
+                    torch.testing.assert_close(grad, original, atol=0, rtol=0)
+                assert all(out.data_ptr() != buf.data_ptr() for out, buf in zip(actual, candidate_bufs))
+                baseline_time = _timing(lambda: _momentum_reference(grads, bufs, .95, .85, nesterov), args.repeats)
+                candidate_time = _timing(
+                    lambda: _momentum_update_triton(grads, candidate_bufs, .95, .85, nesterov), args.repeats)
+                row = {"scheme": "momentum_triton", "shape": shape, "count": 4, "dtype": str(dtype),
+                       "nesterov": nesterov, "momentum": [.95, .85], "error": error, "state_error": state_error,
+                       "limit": .01, "passed": error["finite"] and state_error["finite"]
+                       and error["relative_l2"] <= .01 and state_error["relative_l2"] <= .01,
+                       "baseline": baseline_time, "candidate": candidate_time,
+                       "speedup": baseline_time["median_ms"] / candidate_time["median_ms"]}
+                rows.append(row)
+                print(json.dumps(row), flush=True)
+    return rows
+
 def _main():
     """Select an idle device explicitly and persist machine-readable results."""
     parser = argparse.ArgumentParser()
+    parser.add_argument("--scheme", choices=("ns", "momentum"), default="ns")
     parser.add_argument("--device", type=int, default=2)
     parser.add_argument("--repeats", type=int, default=20)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     torch.npu.set_device(args.device)
     with torch.no_grad():
-        rows = _ns_cases(args)
+        rows = _ns_cases(args) if args.scheme == "ns" else _momentum_cases(args)
     report = {"torch": torch.__version__, "torch_npu": torch_npu.__version__, "rows": rows}
     args.output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
 

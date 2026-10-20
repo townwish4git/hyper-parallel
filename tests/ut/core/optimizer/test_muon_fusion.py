@@ -19,6 +19,7 @@ import unittest
 import torch
 
 from hyper_parallel.core.optimizer.muon import Muon, zeropower_via_newtonschulz5
+from hyper_parallel.core.optimizer.muon_pointwise import _momentum_update_triton
 from tests.common.mark_utils import arg_mark
 
 
@@ -67,3 +68,31 @@ class TestMuonFusion(unittest.TestCase):
         """
         with self.assertRaisesRegex(ValueError, "Unknown NS"):
             Muon([torch.nn.Parameter(torch.ones(2, 2))], ns_implementation="unknown")
+
+
+    @arg_mark(plat_marks=["cpu_linux"], level_mark="level0", card_mark="onecard", essential_mark="essential")
+    def test_momentum_backend_validation(self):
+        """Feature: Momentum backend configuration.
+
+        Description: Reject unknown backends and conflicting callbacks.
+        Expectation: Fail before modifying any optimizer state.
+        """
+        param = torch.nn.Parameter(torch.ones(2, 2))
+        with self.assertRaisesRegex(ValueError, "Unknown momentum"):
+            Muon([param], momentum_implementation="unknown")
+        with self.assertRaisesRegex(ValueError, "cannot be combined"):
+            Muon([param], momentum_implementation="triton", momentum_update_fn=lambda *args: [])
+
+
+    @arg_mark(plat_marks=["cpu_linux"], level_mark="level0", card_mark="onecard", essential_mark="essential")
+    def test_momentum_rejects_cpu_without_mutation(self):
+        """Feature: Explicit NPU kernel requirements.
+
+        Description: Try the optional backend on CPU tensors.
+        Expectation: Reject before mutating persistent state or importing Triton.
+        """
+        grad = torch.ones(2, 2)
+        buf = torch.zeros_like(grad)
+        with self.assertRaisesRegex(ValueError, "contiguous local NPU"):
+            _momentum_update_triton([grad], [buf], .95, .85, True)
+        torch.testing.assert_close(buf, torch.zeros_like(buf), atol=0, rtol=0)

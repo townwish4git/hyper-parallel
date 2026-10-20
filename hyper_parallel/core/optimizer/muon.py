@@ -25,6 +25,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 import torch  # pylint: disable=forbidden-backend-import
 import torch.distributed as dist  # pylint: disable=forbidden-backend-import
 
+from hyper_parallel.core.optimizer.muon_pointwise import _momentum_update_triton
 from hyper_parallel.core.optimizer.optimizer import AsyncReplicateBroadcaster, BaseDistributedOptimizer
 from hyper_parallel.core.optimizer.dtensor_compat import to_local_if_dtensor
 from hyper_parallel.core.optimizer.sharding_category import (
@@ -81,6 +82,7 @@ _MUON_ADVANCED_DEFAULTS: Dict[str, Any] = {
     "ns_epsilon": 1e-10,
     "zeropower_fn": None,
     "momentum_update_fn": None,
+    "momentum_implementation": "standard",
     "reshape_fn": None,
     "ns_transform_fn": None,
     "post_update_fn": None,
@@ -97,6 +99,7 @@ class _MuonAdvancedOptions:
     ns_coefficients: Optional[Sequence[Tuple[float, float, float]]]
     ns_epsilon: float
     zeropower_fn: Optional[Callable[..., torch.Tensor]]
+    momentum_implementation: str
     momentum_update_fn: Optional[Callable[..., torch.Tensor]]
     reshape_fn: Optional[Callable[..., Any]]
     ns_transform_fn: Optional[Callable[..., Optional[NSInputTransform]]]
@@ -263,6 +266,7 @@ class Muon(BaseDistributedOptimizer):
             ns_epsilon: Numerical stability term used during normalization.
             zeropower_fn: Optional Newton-Schulz implementation override.
             momentum_update_fn: Optional momentum update implementation override.
+            momentum_implementation: Standard foreach or opt-in NPU triton kernel.
             reshape_fn: Optional logical-matrix reshape function.
             ns_transform_fn: Optional Newton-Schulz input transformation.
             post_update_fn: Optional callback applied after a parameter update.
@@ -271,6 +275,10 @@ class Muon(BaseDistributedOptimizer):
             hsdp_replica_count: Optional optimizer-state replica group size.
         """
         advanced = _resolve_muon_advanced_options(advanced_options)
+        if advanced.momentum_implementation not in ("standard", "triton"):
+            raise ValueError(f"Unknown momentum implementation: {advanced.momentum_implementation!r}")
+        if advanced.momentum_update_fn is not None and advanced.momentum_implementation != "standard":
+            raise ValueError("momentum_update_fn cannot be combined with a nonstandard momentum implementation")
         if advanced.ns_implementation not in ("standard", "standard_fused"):
             raise ValueError(f"Unknown NS implementation: {advanced.ns_implementation!r}")
         if ns_variant not in ("legacy", "asym5", "custom"):
@@ -296,6 +304,7 @@ class Muon(BaseDistributedOptimizer):
             "weight_decay": weight_decay,
             "matched_adamw_rms": matched_adamw_rms,
             "momentum": momentum,
+            "momentum_implementation": advanced.momentum_implementation,
             "nesterov": nesterov,
             "ns_steps": ns_steps,
             "ns_variant": ns_variant,
@@ -522,18 +531,21 @@ class Muon(BaseDistributedOptimizer):
             self.shard_assignments_by_group[group_idx] = shard_hsdp_assignments
             self.shard_params_by_group[group_idx] = shard_params
 
+    @staticmethod
+    def _momentum_pair(momentum):
+        if not isinstance(momentum, (list, tuple)):
+            return momentum, momentum
+        if len(momentum) == 1:
+            return momentum[0], momentum[0]
+        return momentum
+
     def _update_muon_momentum(
             self,
             group: Dict[str, Any],
             params: List[torch.Tensor],
     ) -> Dict[torch.nn.Parameter, torch.Tensor]:
         """Compute first-order momentum and return bfloat16 NS inputs."""
-        momentum = group["momentum"]
-        if not isinstance(momentum, (list, tuple)):
-            momentum = [momentum]
-        if len(momentum) == 1:
-            momentum = (momentum[0], momentum[0])
-        momentum1, momentum2 = momentum
+        momentum1, momentum2 = self._momentum_pair(group["momentum"])
         # Pre-filter params with valid grads and ensure momentum buffers exist
         valid_params = []
         grads = []
@@ -563,6 +575,10 @@ class Muon(BaseDistributedOptimizer):
             custom_updates = [update.to(torch.bfloat16) for update in custom_updates]
             param_updates = dict(zip(valid_params, custom_updates))
             return param_updates
+
+        if group.get("momentum_implementation", "standard") == "triton":
+            updates = _momentum_update_triton(grads, bufs, momentum1, momentum2, group["nesterov"])
+            return dict(zip(valid_params, updates))
 
         # Match muon_update_core():
         # m_for_update = grad + momentum1 * m_old

@@ -28,7 +28,7 @@ import torch
 import torch_npu
 
 from hyper_parallel.core.optimizer.muon import zeropower_via_newtonschulz5
-from hyper_parallel.core.optimizer.muon_pointwise import _momentum_update_triton
+from hyper_parallel.core.optimizer.muon_pointwise import _apply_update_triton, _momentum_update_triton
 
 
 def _errors(actual, expected):
@@ -140,17 +140,63 @@ def _momentum_cases(args):
                 print(json.dumps(row), flush=True)
     return rows
 
+
+def _pointwise_cases(args):
+    rows = []
+    for dtype in (torch.float32, torch.bfloat16):
+        for shape in ((256, 1024), (1024, 4096)):
+            torch.manual_seed(18)
+            updates = [torch.randn(shape, dtype=dtype, device="npu") for _ in range(4)]
+            params = [torch.randn(shape, dtype=torch.float32, device="npu") for _ in range(4)]
+            actual = [param.clone() for param in params]
+            if args.scheme == "writeback":
+                params = [torch.empty_like(update) for update in updates]
+                actual = [torch.empty_like(update) for update in updates]
+                work = [update.clone() for update in updates]
+
+                def _baseline():
+                    for value, output in zip(work, params):
+                        value.mul_(.99)
+                        output.copy_(value)
+
+                def _candidate():
+                    for value, output in zip(updates, actual):
+                        torch.mul(value, .99, out=output)
+            else:
+                def _baseline():
+                    torch._foreach_mul_(params, .999)
+                    torch._foreach_add_(params, updates, alpha=-.01)
+
+                def _candidate():
+                    _apply_update_triton(actual, updates, .999, -.01)
+            _baseline()
+            _candidate()
+            metrics = {"relative_l2": 0.0, "max_abs": 0.0, "finite": True}
+            _merge_errors(metrics, actual, params)
+            baseline_time = _timing(_baseline, args.repeats)
+            candidate_time = _timing(_candidate, args.repeats)
+            row = {"scheme": args.scheme, "shape": shape, "count": 4, "dtype": str(dtype),
+                   "error": metrics, "limit": 1e-6,
+                   "passed": metrics["finite"] and metrics["relative_l2"] <= 1e-6,
+                   "baseline": baseline_time, "candidate": candidate_time,
+                   "speedup": baseline_time["median_ms"] / candidate_time["median_ms"]}
+            rows.append(row)
+            print(json.dumps(row), flush=True)
+    return rows
+
 def _main():
     """Select an idle device explicitly and persist machine-readable results."""
     parser = argparse.ArgumentParser()
-    parser.add_argument("--scheme", choices=("ns", "momentum"), default="ns")
+    parser.add_argument("--scheme", choices=("ns", "momentum", "writeback", "apply"), default="ns")
     parser.add_argument("--device", type=int, default=2)
     parser.add_argument("--repeats", type=int, default=20)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     torch.npu.set_device(args.device)
     with torch.no_grad():
-        rows = _ns_cases(args) if args.scheme == "ns" else _momentum_cases(args)
+        runners = {"ns": _ns_cases, "momentum": _momentum_cases,
+                   "writeback": _pointwise_cases, "apply": _pointwise_cases}
+        rows = runners[args.scheme](args)
     report = {"torch": torch.__version__, "torch_npu": torch_npu.__version__, "rows": rows}
     args.output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
 

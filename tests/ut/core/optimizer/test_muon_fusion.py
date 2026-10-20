@@ -96,3 +96,26 @@ class TestMuonFusion(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "contiguous local NPU"):
             _momentum_update_triton([grad], [buf], .95, .85, True)
         torch.testing.assert_close(buf, torch.zeros_like(buf), atol=0, rtol=0)
+
+
+    @arg_mark(plat_marks=["cpu_linux"], level_mark="level0", card_mark="onecard", essential_mark="essential")
+    def test_scale_writeback_matches_native_path(self):
+        """Feature: Fused scaling into NS views.
+
+        Description: Compare ordinary, batched and transposed logical matrices.
+        Expectation: Preserve the source API and match the unfused result.
+        """
+        for shape in ((8, 16), (16, 8), (3, 8, 16)):
+            optimizer = object.__new__(Muon)
+            optimizer.reshape_fn = None
+            optimizer.ns_transform_fn = None
+            optimizer.zeropower_fn = None
+            param = torch.nn.Parameter(torch.ones(shape))
+            original = torch.randn(shape)
+            group = {"ns_steps": 5, "ns_variant": "asym5", "ns_coefficients": None,
+                     "ns_epsilon": 1e-10, "matched_adamw_rms": .2, "zero_rms_scale_mode": "zero",
+                     "apply_lr_in_update": False, "lr": .01}
+            expected = optimizer._compute_batched_ns_updates_fast([param], {param: original.clone()}, group, True)
+            group["fused_scale_writeback"] = True
+            actual = optimizer._compute_batched_ns_updates_fast([param], {param: original.clone()}, group, True)
+            torch.testing.assert_close(actual[param], expected[param], atol=0, rtol=0)

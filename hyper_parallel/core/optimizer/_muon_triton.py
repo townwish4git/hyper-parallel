@@ -81,3 +81,31 @@ def _momentum_kernel(g0, g1, g2, g3, b0, b1, b2, b3, o0, o1, o2, o3,
         _momentum_elementwise(g2, b2, o2, count, momentum1, momentum2, nesterov, block_id, BLOCK)
     else:
         _momentum_elementwise(g3, b3, o3, count, momentum1, momentum2, nesterov, block_id, BLOCK)
+
+
+@triton.jit
+def _apply_elementwise(param, update, count: tl.constexpr, decay: tl.constexpr,
+                       alpha: tl.constexpr, block_id, BLOCK: tl.constexpr):
+    offsets = block_id * BLOCK + tl.arange(0, BLOCK)
+    mask = offsets < count
+    previous = tl.load(param + offsets, mask, other=0).to(tl.float32)
+    direction = tl.load(update + offsets, mask, other=0).to(tl.float32)
+    # Master parameters are FP32; keep decay and addition as separate roundings.
+    result = previous * decay + direction * alpha
+    tl.store(param + offsets, result, mask)
+
+
+@triton.jit
+def _apply_kernel(p0, p1, p2, p3, u0, u1, u2, u3, count: tl.constexpr,
+                  decay: tl.constexpr, alpha: tl.constexpr, BLOCK: tl.constexpr):
+    blocks = tl.cdiv(count, BLOCK)
+    tensor_index = tl.program_id(0) // blocks
+    block_id = tl.program_id(0) % blocks
+    if tensor_index == 0:
+        _apply_elementwise(p0, u0, count, decay, alpha, block_id, BLOCK)
+    elif tensor_index == 1:
+        _apply_elementwise(p1, u1, count, decay, alpha, block_id, BLOCK)
+    elif tensor_index == 2:
+        _apply_elementwise(p2, u2, count, decay, alpha, block_id, BLOCK)
+    else:
+        _apply_elementwise(p3, u3, count, decay, alpha, block_id, BLOCK)

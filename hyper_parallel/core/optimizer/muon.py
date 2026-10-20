@@ -25,7 +25,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 import torch  # pylint: disable=forbidden-backend-import
 import torch.distributed as dist  # pylint: disable=forbidden-backend-import
 
-from hyper_parallel.core.optimizer.muon_pointwise import _momentum_update_triton
+from hyper_parallel.core.optimizer.muon_pointwise import _apply_update_triton, _momentum_update_triton
 from hyper_parallel.core.optimizer.optimizer import AsyncReplicateBroadcaster, BaseDistributedOptimizer
 from hyper_parallel.core.optimizer.dtensor_compat import to_local_if_dtensor
 from hyper_parallel.core.optimizer.sharding_category import (
@@ -88,6 +88,8 @@ _MUON_ADVANCED_DEFAULTS: Dict[str, Any] = {
     "post_update_fn": None,
     "zero_rms_scale_mode": "zero",
     "apply_lr_in_update": False,
+    "fused_scale_writeback": False,
+    "update_implementation": "standard",
 }
 
 
@@ -106,6 +108,8 @@ class _MuonAdvancedOptions:
     post_update_fn: Optional[Callable[..., None]]
     zero_rms_scale_mode: str
     apply_lr_in_update: bool
+    fused_scale_writeback: bool
+    update_implementation: str
 
 
 def _resolve_muon_advanced_options(options: Dict[str, Any]) -> _MuonAdvancedOptions:
@@ -272,9 +276,13 @@ class Muon(BaseDistributedOptimizer):
             post_update_fn: Optional callback applied after a parameter update.
             zero_rms_scale_mode: Scaling behavior when matched AdamW RMS is zero.
             apply_lr_in_update: Whether the update callback applies the learning rate.
+            fused_scale_writeback: Scale directly into native NS destination views.
+            update_implementation: Standard foreach or opt-in NPU triton FP32 updates.
             hsdp_replica_count: Optional optimizer-state replica group size.
         """
         advanced = _resolve_muon_advanced_options(advanced_options)
+        if advanced.update_implementation not in ("standard", "triton"):
+            raise ValueError(f"Unknown update implementation: {advanced.update_implementation!r}")
         if advanced.momentum_implementation not in ("standard", "triton"):
             raise ValueError(f"Unknown momentum implementation: {advanced.momentum_implementation!r}")
         if advanced.momentum_update_fn is not None and advanced.momentum_implementation != "standard":
@@ -313,6 +321,8 @@ class Muon(BaseDistributedOptimizer):
             "ns_epsilon": advanced.ns_epsilon,
             "zero_rms_scale_mode": advanced.zero_rms_scale_mode,
             "apply_lr_in_update": advanced.apply_lr_in_update,
+            "fused_scale_writeback": advanced.fused_scale_writeback,
+            "update_implementation": advanced.update_implementation,
         }
         super().__init__(params, defaults, is_muon=True, hsdp_replica_count=hsdp_replica_count)
         self.reshape_fn = advanced.reshape_fn
@@ -605,9 +615,6 @@ class Muon(BaseDistributedOptimizer):
             param_to_ns_input: Dict[torch.nn.Parameter, torch.Tensor],
     ) -> None:
         """Process un-sharded params: shape-group -> memory-batch -> NS -> local update."""
-        lr = group["lr"]
-        weight_decay = group["weight_decay"]
-
         # empty params are not processed in muon, for uneven shard
         param_to_ns_input = {
             p: ns_input for p, ns_input in param_to_ns_input.items() if ns_input.numel() > 0
@@ -627,12 +634,18 @@ class Muon(BaseDistributedOptimizer):
                 local_params = [to_local_if_dtensor(p.data) for p in sub_batch]
                 local_updates = [updates_dict[p].view(lp.shape) for p, lp in zip(sub_batch, local_params)]
 
-                if weight_decay != 0.0:
-                    # pylint: disable=protected-access
-                    torch._foreach_mul_(local_params, 1 - lr * weight_decay)
-                # pylint: disable=protected-access
-                apply_alpha = 1.0 if group["apply_lr_in_update"] else -lr
-                torch._foreach_add_(local_params, local_updates, alpha=apply_alpha)
+                self._apply_local_updates(local_params, local_updates, group)
+
+    @staticmethod
+    def _apply_local_updates(params, updates, group):
+        decay = 1.0 - group["lr"] * group["weight_decay"]
+        alpha = 1.0 if group["apply_lr_in_update"] else -group["lr"]
+        if group.get("update_implementation", "standard") == "triton":
+            _apply_update_triton(params, updates, decay, alpha)
+            return
+        if group["weight_decay"] != 0.0:
+            torch._foreach_mul_(params, decay)  # pylint: disable=protected-access
+        torch._foreach_add_(params, updates, alpha=alpha)  # pylint: disable=protected-access
 
     def _gather_and_compute_shard_updates(
             self,
@@ -1029,8 +1042,11 @@ class Muon(BaseDistributedOptimizer):
                 )
                 if group["apply_lr_in_update"]:
                     scale *= -group["lr"]
-                update.mul_(scale)
-                reshaped_input.copy_(update.contiguous().view_as(reshaped_input))
+                if group.get("fused_scale_writeback", False):
+                    torch.mul(update.reshape_as(reshaped_input), scale, out=reshaped_input)
+                else:
+                    update.mul_(scale)
+                    reshaped_input.copy_(update.contiguous().view_as(reshaped_input))
 
         for param in p_list:
             update = ns_inputs[param].view(state["origin_shapes"][param])
@@ -1128,8 +1144,6 @@ class Muon(BaseDistributedOptimizer):
             hsdp_assign: HSDPGroupAssignment,
     ) -> None:
         """Fused broadcast and apply for shard-group updates."""
-        lr = group["lr"]
-        weight_decay = group["weight_decay"]
         shard_sizes, local_coords, shard_pgs, total_shard_size = self._get_shard_info(hsdp_assign)
         device = to_local_if_dtensor(valid_params[0].data).device
 
@@ -1196,15 +1210,7 @@ class Muon(BaseDistributedOptimizer):
         if not all_local_params:
             return
 
-        if weight_decay != 0.0:
-            coeff = 1.0 - lr * weight_decay
-            # pylint: disable=protected-access
-            torch._foreach_mul_(all_local_params, coeff)
-
-        # Slice-wise Muon scaling has already been applied during NS postprocess.
-        # pylint: disable=protected-access
-        apply_alpha = 1.0 if group["apply_lr_in_update"] else -lr
-        torch._foreach_add_(all_local_params, all_update_shards, alpha=apply_alpha)
+        self._apply_local_updates(all_local_params, all_update_shards, group)
 
     def _build_param_shard_metadata(self) -> None:
         """Build shard metadata once during optimizer init."""

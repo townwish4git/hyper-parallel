@@ -63,3 +63,28 @@ def _momentum_update_triton(grads, bufs, momentum1, momentum2, nesterov):
                 BLOCK=block_size, enable_fp_fusion=False,
             )
     return outputs
+
+
+def _apply_update_triton(params, updates, decay, alpha):
+    """Apply updates to contiguous FP32 master parameters on the current stream."""
+    if len(params) != len(updates):
+        raise ValueError("Muon parameter and update counts must match")
+    _validate_tensors([*params, *updates])
+    for param, update in zip(params, updates):
+        if param.dtype != torch.float32:
+            raise ValueError("Muon triton parameter updates require FP32 master parameters")
+        if param.shape != update.shape or param.device != update.device:
+            raise ValueError("Muon parameters and updates must have matching shape and device")
+    kernel = _npu_kernels()._apply_kernel  # pylint: disable=protected-access
+    buckets = {}
+    for index, (param, update) in enumerate(zip(params, updates)):
+        if param.numel():
+            buckets.setdefault((param.device, update.dtype, param.numel()), []).append(index)
+    for (_, _, count), indices in buckets.items():
+        for start in range(0, len(indices), 4):
+            chunk = indices[start:start + 4]
+            padded = chunk + [chunk[0]] * (4 - len(chunk))
+            kernel[(((count + 8191) // 8192) * len(chunk),)](
+                *(params[i] for i in padded), *(updates[i] for i in padded),
+                count, decay, alpha, BLOCK=8192, enable_fp_fusion=False,
+            )

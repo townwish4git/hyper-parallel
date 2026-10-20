@@ -61,24 +61,27 @@ def _timing(operation, repeats):
 def _ns_cases(args):
     """Compare standard and fused matrix updates with fixed accuracy criteria."""
     rows = []
-    shapes = ((256, 256), (256, 1024), (1024, 256), (4, 256, 1024), (512, 2048))
+    shapes = ((256, 256), (256, 1024), (1024, 256), (4, 256, 1024), (512, 2048), (128, 8192))
     for dtype in (torch.float32, torch.bfloat16):
         for shape in shapes:
             torch.manual_seed(18)
             value = torch.randn(shape, device="npu", dtype=dtype)
+            implementation = "gram" if args.scheme == "gram" else "standard_fused"
             for variant in ("legacy", "asym5"):
                 def _baseline():
                     return zeropower_via_newtonschulz5(value, 5, ns_variant=variant)
 
                 def _candidate():
                     return zeropower_via_newtonschulz5(value, 5, ns_variant=variant,
-                                                    implementation="standard_fused")
+                                                    implementation=implementation,
+                                                    gram_compute_dtype=args.gram_dtype)
 
                 metrics = _errors(_candidate(), _baseline())
                 limit = 1e-4 if dtype == torch.float32 else 0.05
                 reference_time = _timing(_baseline, args.repeats)
                 candidate_time = _timing(_candidate, args.repeats)
-                row = {"scheme": "standard_fused", "shape": shape, "dtype": str(dtype), "variant": variant,
+                row = {"scheme": args.scheme, "gram_dtype": args.gram_dtype,
+                       "shape": shape, "dtype": str(dtype), "variant": variant,
                        "error": metrics, "limit": limit,
                        "passed": metrics["finite"] and metrics["relative_l2"] <= limit,
                        "baseline": reference_time, "candidate": candidate_time,
@@ -187,14 +190,15 @@ def _pointwise_cases(args):
 def _main():
     """Select an idle device explicitly and persist machine-readable results."""
     parser = argparse.ArgumentParser()
-    parser.add_argument("--scheme", choices=("ns", "momentum", "writeback", "apply"), default="ns")
+    parser.add_argument("--scheme", choices=("ns", "momentum", "writeback", "apply", "gram"), default="ns")
+    parser.add_argument("--gram-dtype", choices=("float32", "float16", "bfloat16"), default="float32")
     parser.add_argument("--device", type=int, default=2)
     parser.add_argument("--repeats", type=int, default=20)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     torch.npu.set_device(args.device)
     with torch.no_grad():
-        runners = {"ns": _ns_cases, "momentum": _momentum_cases,
+        runners = {"ns": _ns_cases, "gram": _ns_cases, "momentum": _momentum_cases,
                    "writeback": _pointwise_cases, "apply": _pointwise_cases}
         rows = runners[args.scheme](args)
     report = {"torch": torch.__version__, "torch_npu": torch_npu.__version__, "rows": rows}

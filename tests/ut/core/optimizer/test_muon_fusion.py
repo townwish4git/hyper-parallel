@@ -119,3 +119,38 @@ class TestMuonFusion(unittest.TestCase):
             group["fused_scale_writeback"] = True
             actual = optimizer._compute_batched_ns_updates_fast([param], {param: original.clone()}, group, True)
             torch.testing.assert_close(actual[param], expected[param], atol=0, rtol=0)
+
+
+    @arg_mark(plat_marks=["cpu_linux"], level_mark="level0", card_mark="onecard", essential_mark="essential")
+    def test_gram_algebra_and_restarts(self):
+        """Feature: Gram-space NS recurrence.
+
+        Description: Compare both orientations, batches, coefficients and restarts in float64.
+        Expectation: Match standard NS without modifying the supplied input.
+        """
+        torch.manual_seed(19)
+        for shape in ((8, 32), (32, 8), (2, 8, 32), (8, 8)):
+            for resets in ((), (2,)):
+                for variant in ("legacy", "asym5"):
+                    with self.subTest(shape=shape, resets=resets, variant=variant):
+                        value = torch.randn(shape, dtype=torch.float64)
+                        original = value.clone()
+                        expected = zeropower_via_newtonschulz5(value, 5, ns_variant=variant)
+                        actual = zeropower_via_newtonschulz5(
+                            value, 5, ns_variant=variant, implementation="gram", gram_reset_iterations=resets)
+                        torch.testing.assert_close(actual, expected, rtol=1e-8, atol=1e-8)
+                        torch.testing.assert_close(value, original, rtol=0, atol=0)
+
+    @arg_mark(plat_marks=["cpu_linux"], level_mark="level0", card_mark="onecard", essential_mark="essential")
+    def test_gram_zeros_and_configuration(self):
+        """Feature: Gram stability and configuration.
+
+        Description: Exercise a zero matrix and invalid precision or restart settings.
+        Expectation: Return finite zeros and reject unsupported settings.
+        """
+        value = torch.zeros(8, 32)
+        actual = zeropower_via_newtonschulz5(value, 5, implementation="gram")
+        torch.testing.assert_close(actual, value, atol=0, rtol=0)
+        for options in ({"gram_compute_dtype": "int8"}, {"gram_reset_iterations": (0,)}):
+            with self.assertRaises(ValueError):
+                Muon([torch.nn.Parameter(value)], ns_implementation="gram", **options)

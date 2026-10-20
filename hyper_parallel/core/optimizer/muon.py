@@ -25,6 +25,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 import torch  # pylint: disable=forbidden-backend-import
 import torch.distributed as dist  # pylint: disable=forbidden-backend-import
 
+from hyper_parallel.core.optimizer.muon_gram import _gram_newton_schulz
 from hyper_parallel.core.optimizer.muon_pointwise import _apply_update_triton, _momentum_update_triton
 from hyper_parallel.core.optimizer.optimizer import AsyncReplicateBroadcaster, BaseDistributedOptimizer
 from hyper_parallel.core.optimizer.dtensor_compat import to_local_if_dtensor
@@ -78,6 +79,8 @@ class MuonPostUpdateContext:
 
 _MUON_ADVANCED_DEFAULTS: Dict[str, Any] = {
     "ns_implementation": "standard",
+    "gram_compute_dtype": "float32",
+    "gram_reset_iterations": (2,),
     "ns_coefficients": None,
     "ns_epsilon": 1e-10,
     "zeropower_fn": None,
@@ -98,6 +101,8 @@ class _MuonAdvancedOptions:
     """Validated low-frequency Muon options."""
 
     ns_implementation: str
+    gram_compute_dtype: str
+    gram_reset_iterations: Tuple[int, ...]
     ns_coefficients: Optional[Sequence[Tuple[float, float, float]]]
     ns_epsilon: float
     zeropower_fn: Optional[Callable[..., torch.Tensor]]
@@ -122,48 +127,26 @@ def _resolve_muon_advanced_options(options: Dict[str, Any]) -> _MuonAdvancedOpti
     return _MuonAdvancedOptions(**resolved)
 
 
+def _validate_muon_implementations(advanced):
+    if advanced.gram_compute_dtype not in ("float32", "float16", "bfloat16"):
+        raise ValueError(f"Unknown Gram compute dtype: {advanced.gram_compute_dtype!r}")
+    if any(not isinstance(index, int) or isinstance(index, bool) or index < 1
+           for index in advanced.gram_reset_iterations):
+        raise ValueError("Gram restart indices must be positive integers")
+    if advanced.update_implementation not in ("standard", "triton"):
+        raise ValueError(f"Unknown update implementation: {advanced.update_implementation!r}")
+    if advanced.momentum_implementation not in ("standard", "triton"):
+        raise ValueError(f"Unknown momentum implementation: {advanced.momentum_implementation!r}")
+    if advanced.momentum_update_fn is not None and advanced.momentum_implementation != "standard":
+        raise ValueError("momentum_update_fn cannot be combined with a nonstandard momentum implementation")
+    if advanced.ns_implementation not in ("standard", "standard_fused", "gram"):
+        raise ValueError(f"Unknown NS implementation: {advanced.ns_implementation!r}")
+
+
 _TransformNSState = Dict[str, Any]
 
 
-def zeropower_via_newtonschulz5(
-        ns_inputs: torch.Tensor,
-        steps: int,
-        ns_variant: str = "asym5",
-        epsilon: float = 1e-10,
-        ns_coefficients: Optional[Sequence[Tuple[float, float, float]]] = None,
-        implementation: str = "standard",
-) -> torch.Tensor:
-    """Newton-Schulz orthogonalization with preallocated matmul buffers.
-
-    Args:
-        ns_inputs: Matrices with trailing row and column dimensions.
-        steps: Number of polynomial iterations.
-        ns_variant: Coefficient schedule name.
-        epsilon: Denominator stabilization added to the norm.
-        ns_coefficients: Coefficients for the custom schedule.
-        implementation: Standard or opt-in fused matrix updates.
-
-    Returns:
-        Orthogonalized matrices with the input shape and dtype.
-    """
-    if implementation not in ("standard", "standard_fused"):
-        raise ValueError(f"Unknown NS implementation: {implementation!r}")
-    original_shape = ns_inputs.shape
-    mat_x = ns_inputs
-    if implementation == "standard_fused" and mat_x.ndim > 3:
-        mat_x = mat_x.reshape(-1, *mat_x.shape[-2:])
-    transposed = ns_inputs.size(-2) > ns_inputs.size(-1)
-    if transposed:
-        mat_x = mat_x.mT
-
-    # Normalize input before Newton-Schulz iteration.
-    mat_x = mat_x / (mat_x.norm(dim=(-2, -1), keepdim=True) + epsilon)
-
-    n_size = mat_x.size(-2)
-    buf_a = torch.empty(mat_x.shape[:-2] + (n_size, n_size), dtype=mat_x.dtype, device=mat_x.device)
-    buf_b = torch.empty_like(buf_a)
-    buf_c = torch.empty(mat_x.shape, dtype=mat_x.dtype, device=mat_x.device)
-
+def _ns_schedule(ns_variant, steps, ns_coefficients):
     if ns_variant == "legacy":
         step_coeffs = [_NS_LEGACY_COEFFS] * steps
     elif ns_variant == "asym5":
@@ -180,6 +163,61 @@ def zeropower_via_newtonschulz5(
         raise ValueError(
             f"ns_variant must be 'legacy', 'asym5', or 'custom', got {ns_variant!r}"
         )
+
+    return step_coeffs
+
+
+def zeropower_via_newtonschulz5(
+        ns_inputs: torch.Tensor,
+        steps: int,
+        ns_variant: str = "asym5",
+        epsilon: float = 1e-10,
+        ns_coefficients: Optional[Sequence[Tuple[float, float, float]]] = None,
+        implementation: str = "standard",
+        gram_compute_dtype: str = "float32",
+        gram_reset_iterations: Tuple[int, ...] = (2,),
+) -> torch.Tensor:
+    """Newton-Schulz orthogonalization with preallocated matmul buffers.
+
+    Args:
+        ns_inputs: Matrices with trailing row and column dimensions.
+        steps: Number of polynomial iterations.
+        ns_variant: Coefficient schedule name.
+        epsilon: Denominator stabilization added to the norm.
+        ns_coefficients: Coefficients for the custom schedule.
+        implementation: Standard, fused, or experimental Gram matrix updates.
+        gram_compute_dtype: Gram iteration dtype; float64 inputs retain their precision.
+        gram_reset_iterations: Zero-based iterations that refresh the Gram matrix.
+
+    Returns:
+        Orthogonalized matrices with the input shape and dtype.
+    """
+    if implementation not in ("standard", "standard_fused", "gram"):
+        raise ValueError(f"Unknown NS implementation: {implementation!r}")
+    original_shape = ns_inputs.shape
+    mat_x = ns_inputs
+    if implementation != "standard" and mat_x.ndim > 3:
+        mat_x = mat_x.reshape(-1, *mat_x.shape[-2:])
+    transposed = ns_inputs.size(-2) > ns_inputs.size(-1)
+    if transposed:
+        mat_x = mat_x.mT
+
+    # Normalize input before Newton-Schulz iteration.
+    mat_x = mat_x / (mat_x.norm(dim=(-2, -1), keepdim=True) + epsilon)
+
+    step_coeffs = _ns_schedule(ns_variant, steps, ns_coefficients)
+    if implementation == "gram":
+        if gram_compute_dtype not in ("float32", "float16", "bfloat16"):
+            raise ValueError(f"Unknown Gram compute dtype: {gram_compute_dtype!r}")
+        if mat_x.size(-2) != mat_x.size(-1):
+            result = _gram_newton_schulz(mat_x, step_coeffs, gram_reset_iterations, gram_compute_dtype)
+            return (result.mT if transposed else result).reshape(original_shape)
+        implementation = "standard_fused"
+
+    n_size = mat_x.size(-2)
+    buf_a = torch.empty(mat_x.shape[:-2] + (n_size, n_size), dtype=mat_x.dtype, device=mat_x.device)
+    buf_b = torch.empty_like(buf_a)
+    buf_c = torch.empty(mat_x.shape, dtype=mat_x.dtype, device=mat_x.device)
 
     for coeff_a, coeff_b, coeff_c in step_coeffs:
         if implementation == "standard_fused":
@@ -265,7 +303,9 @@ class Muon(BaseDistributedOptimizer):
             nesterov: Whether to use Nesterov momentum.
             ns_steps: Newton-Schulz iteration count.
             ns_variant: Newton-Schulz coefficient variant.
-            ns_implementation: Standard or opt-in standard_fused matrix updates.
+            ns_implementation: Standard, standard_fused, or experimental gram updates.
+            gram_compute_dtype: Precision used for Gram iterations.
+            gram_reset_iterations: Iterations at which to refresh the Gram matrix.
             ns_coefficients: Optional custom Newton-Schulz coefficients.
             ns_epsilon: Numerical stability term used during normalization.
             zeropower_fn: Optional Newton-Schulz implementation override.
@@ -281,14 +321,7 @@ class Muon(BaseDistributedOptimizer):
             hsdp_replica_count: Optional optimizer-state replica group size.
         """
         advanced = _resolve_muon_advanced_options(advanced_options)
-        if advanced.update_implementation not in ("standard", "triton"):
-            raise ValueError(f"Unknown update implementation: {advanced.update_implementation!r}")
-        if advanced.momentum_implementation not in ("standard", "triton"):
-            raise ValueError(f"Unknown momentum implementation: {advanced.momentum_implementation!r}")
-        if advanced.momentum_update_fn is not None and advanced.momentum_implementation != "standard":
-            raise ValueError("momentum_update_fn cannot be combined with a nonstandard momentum implementation")
-        if advanced.ns_implementation not in ("standard", "standard_fused"):
-            raise ValueError(f"Unknown NS implementation: {advanced.ns_implementation!r}")
+        _validate_muon_implementations(advanced)
         if ns_variant not in ("legacy", "asym5", "custom"):
             raise ValueError(
                 f"ns_variant must be 'legacy', 'asym5', or 'custom', got {ns_variant!r}"
@@ -317,6 +350,8 @@ class Muon(BaseDistributedOptimizer):
             "ns_steps": ns_steps,
             "ns_variant": ns_variant,
             "ns_implementation": advanced.ns_implementation,
+            "gram_compute_dtype": advanced.gram_compute_dtype,
+            "gram_reset_iterations": tuple(advanced.gram_reset_iterations),
             "ns_coefficients": normalized_coefficients,
             "ns_epsilon": advanced.ns_epsilon,
             "zero_rms_scale_mode": advanced.zero_rms_scale_mode,
@@ -890,7 +925,9 @@ class Muon(BaseDistributedOptimizer):
             ns_variant: str = "asym5",
             ns_coefficients: Optional[Sequence[Tuple[float, float, float]]] = None,
             ns_epsilon: float = 1e-10,
-        ns_implementation: str = "standard",
+            ns_implementation: str = "standard",
+            gram_compute_dtype: str = "float32",
+            gram_reset_iterations: Tuple[int, ...] = (2,),
     ) -> List[torch.Tensor]:
         """Run batched NS on mixed-shape tensors and restore their original shapes."""
 
@@ -934,6 +971,8 @@ class Muon(BaseDistributedOptimizer):
                 epsilon=ns_epsilon,
                 ns_coefficients=ns_coefficients,
                 implementation=ns_implementation,
+                gram_compute_dtype=gram_compute_dtype,
+                gram_reset_iterations=gram_reset_iterations,
             )
         else:
             merged_update = self.zeropower_fn(merged_input, steps=ns_steps)
@@ -1034,7 +1073,9 @@ class Muon(BaseDistributedOptimizer):
         for tensor_list in state["reshape_groups"].values():
             updates = self._compute_batched_ns_outputs_for_tensors(
                 tensor_list, group["ns_steps"], group["ns_variant"], group["ns_coefficients"], group["ns_epsilon"],
-                ns_implementation=group.get("ns_implementation", "standard")
+                ns_implementation=group.get("ns_implementation", "standard"),
+                gram_compute_dtype=group.get("gram_compute_dtype", "float32"),
+                gram_reset_iterations=group.get("gram_reset_iterations", (2,)),
             )
             for reshaped_input, update in zip(tensor_list, updates):
                 scale = compute_muon_slice_scale(
@@ -1104,6 +1145,8 @@ class Muon(BaseDistributedOptimizer):
                 ns_coefficients=group["ns_coefficients"],
                 ns_epsilon=group["ns_epsilon"],
                 ns_implementation=group.get("ns_implementation", "standard"),
+                gram_compute_dtype=group.get("gram_compute_dtype", "float32"),
+                gram_reset_iterations=group.get("gram_reset_iterations", (2,)),
             )
 
             # Scale updates.

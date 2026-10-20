@@ -62,7 +62,10 @@ def _ns_cases(args):
     """Compare standard and fused matrix updates with fixed accuracy criteria."""
     rows = []
     shapes = ((256, 256), (256, 1024), (1024, 256), (4, 256, 1024), (512, 2048), (128, 8192))
-    for dtype in (torch.float32, torch.bfloat16):
+    if args.large:
+        shapes = ((1024, 4096), (2048, 8192), (128, 32768))
+    dtypes = (torch.float32, torch.bfloat16) if args.dtype == "all" else (getattr(torch, args.dtype),)
+    for dtype in dtypes:
         for shape in shapes:
             torch.manual_seed(18)
             value = torch.randn(shape, device="npu", dtype=dtype)
@@ -190,7 +193,10 @@ def _pointwise_cases(args):
 def _main():
     """Select an idle device explicitly and persist machine-readable results."""
     parser = argparse.ArgumentParser()
+    parser.add_argument("--require-pass", action="store_true")
     parser.add_argument("--scheme", choices=("ns", "momentum", "writeback", "apply", "gram"), default="ns")
+    parser.add_argument("--large", action="store_true")
+    parser.add_argument("--dtype", choices=("all", "float32", "bfloat16"), default="all")
     parser.add_argument("--gram-dtype", choices=("float32", "float16", "bfloat16"), default="float32")
     parser.add_argument("--device", type=int, default=2)
     parser.add_argument("--repeats", type=int, default=20)
@@ -203,6 +209,8 @@ def _main():
         rows = runners[args.scheme](args)
     report = {"torch": torch.__version__, "torch_npu": torch_npu.__version__, "rows": rows}
     args.output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    if args.require_pass and not all(row["passed"] for row in rows):
+        raise AssertionError("One or more isolated Muon accuracy screens failed")
 
 
 if __name__ == "__main__":

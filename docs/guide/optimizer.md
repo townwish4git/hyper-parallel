@@ -135,3 +135,9 @@ model.set_gradient_scaling_factor(scale_factor=0.5)
 3. **warmup**：建议使用 warmup_steps，从 0 线性增加到目标 lr
 4. **weight_decay**：AdamW 的 weight_decay 建议设为 0.1
 5. **与 FSDP 配合**：FSDP 下优化器状态自动分片，无需额外配置
+
+## Muon 可选融合路径
+
+Muon 提供独立、默认关闭的 NS、动量、缩放写回和参数更新实验开关。
+实机结果显示部分方案存在数值差异或性能退化，不能统一开启。
+配置、精度边界和复现命令见 [Muon 融合优化实测记录](muon-fusion-validation.md)。

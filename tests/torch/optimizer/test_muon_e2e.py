@@ -97,3 +97,12 @@ def test_muon_e2e_callbacks():
         TorchCase(_TEST_MUON_E2E, "test_muon_ns_transform_fn_qkv_split_parity", None, 1),
         TorchCase(_TEST_MUON_E2E, "test_muon_post_update_fn_context", None, 1),
     ])
+
+
+@arg_mark(plat_marks=["platform_ascend910b"], level_mark="level1", card_mark="allcards", essential_mark="essential")
+def test_muon_e2e_overlap_8p():
+    """Validate pipeline parity and real forward/backward on an eight-card FSDP mesh."""
+    parallel_run([
+        TorchCase(_TEST_MUON_E2E, "test_muon_e2e_overlap_full_shard_8p", None, 8),
+        TorchCase(_TEST_MUON_E2E, "test_muon_e2e_overlap_forward_backward_8p", None, 8),
+    ])

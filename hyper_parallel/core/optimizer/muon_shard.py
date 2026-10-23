@@ -28,8 +28,9 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-import torch
-import torch.distributed as dist
+# Native Torch is required by the current core rules; the legacy backend-dispatch lint is inapplicable.
+import torch  # pylint: disable=forbidden-backend-import
+import torch.distributed as dist  # pylint: disable=forbidden-backend-import
 
 from hyper_parallel.core.optimizer.dtensor_compat import to_local_if_dtensor
 from hyper_parallel.core.optimizer.sharding_category import (
@@ -369,18 +370,17 @@ def _prepare_gather_inputs(
     return gather_inputs, param_meta, total_padded_numel
 
 
-def _pack_and_allgather(
+def _pack_gather_buffers(
         gather_inputs: List[torch.Tensor],
         param_meta: List[_GatherParamMeta],
         total_padded_numel: int,
         axis_idx: int,
         dtype: torch.dtype,
         device: torch.device,
-        shard_pg: dist.ProcessGroup,
         shard_size: int,
         buffer_cache: Optional[Dict],
-) -> torch.Tensor:
-    """Pack local shards into one buffer, all-gather, return gathered view."""
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Pack local shards and allocate the matching receive buffer."""
     pack_buffer = _get_or_alloc_buffer(
         buffer_cache, ("fused_allgather", axis_idx, dtype, device), total_padded_numel,
         dtype, device,
@@ -397,6 +397,25 @@ def _pack_and_allgather(
         dtype, device,
     )[:total_padded_numel * shard_size]
 
+    return pack_buffer, gathered_buffer
+
+
+def _pack_and_allgather(
+        gather_inputs: List[torch.Tensor],
+        param_meta: List[_GatherParamMeta],
+        total_padded_numel: int,
+        axis_idx: int,
+        dtype: torch.dtype,
+        device: torch.device,
+        shard_pg: dist.ProcessGroup,
+        shard_size: int,
+        buffer_cache: Optional[Dict],
+) -> torch.Tensor:
+    """Pack local shards into one buffer, all-gather, return gathered view."""
+    pack_buffer, gathered_buffer = _pack_gather_buffers(
+        gather_inputs, param_meta, total_padded_numel, axis_idx,
+        dtype, device, shard_size, buffer_cache,
+    )
     dist.all_gather_into_tensor(gathered_buffer, pack_buffer, group=shard_pg)
     return gathered_buffer.view(shard_size, total_padded_numel)
 
@@ -511,3 +530,109 @@ def fused_allgather_dtensor_params(
         current_tensors = new_tensors  # type: ignore[assignment]
 
     return current_tensors
+
+
+@dataclass
+class PendingMuonGather:
+    """Own asynchronous gather storage until the consumer has finished using it."""
+
+    work: Any
+    send_buffer: torch.Tensor
+    gathered_view: torch.Tensor
+    inputs: List[torch.Tensor]
+    metadata: List[_GatherParamMeta]
+    tensor_dim: int
+    shard_size: int
+    keep_indices: set
+
+    def finish(self) -> List[Optional[torch.Tensor]]:
+        """Wait on the caller's stream and reconstruct only its owner inputs."""
+        self.work.wait()
+        return _unpack_gathered_results(
+            self.gathered_view, self.inputs, self.metadata, self.inputs,
+            self.tensor_dim, self.shard_size, len(self.inputs), True, self.keep_indices,
+        )
+
+
+@dataclass
+class PreparedMuonGather:
+    """Packed input independent of the reusable receive slot."""
+
+    send_buffer: torch.Tensor
+    inputs: List[torch.Tensor]
+    metadata: List[_GatherParamMeta]
+    tensor_dim: int
+    shard_size: int
+    keep_indices: set
+
+    def launch(self, shard_pg: dist.ProcessGroup, buffer_cache: Dict) -> PendingMuonGather:
+        """Submit only the collective; input packing has already been enqueued."""
+        source = self.send_buffer
+        output = _get_or_alloc_buffer(
+            buffer_cache, ("fused_allgather_out", 0, source.dtype, source.device),
+            source.numel() * self.shard_size, source.dtype, source.device,
+        )[:source.numel() * self.shard_size]
+        work = dist.all_gather_into_tensor(output, source, group=shard_pg, async_op=True)
+        return PendingMuonGather(
+            work, source, output.view(self.shard_size, source.numel()),
+            self.inputs, self.metadata, self.tensor_dim, self.shard_size, self.keep_indices,
+        )
+
+
+def prepare_muon_gather(
+        local_tensors: List[torch.Tensor],
+        shard_pg: dist.ProcessGroup,
+        tensor_dim: int,
+        stage_metas: List[ParamShardStageMeta],
+        keep_indices: set,
+        buffer_cache: Optional[Dict] = None,
+        plan_cache: Optional[Dict] = None,
+) -> PreparedMuonGather:
+    """Pack one bucket, reusing static layout metadata and bounded send storage."""
+    shard_size = dist.get_world_size(shard_pg)
+    first = local_tensors[0]
+    signature = (tensor_dim, shard_size, first.dtype,
+                 tuple((tuple(tensor.shape), tensor.stride()) for tensor in local_tensors),
+                 tuple((tuple(meta.pad_shape), tuple(meta.split_sizes)) for meta in stage_metas))
+    if plan_cache is not None and plan_cache.get("signature") == signature:
+        metadata, padded_numel = plan_cache["metadata"], plan_cache["padded_numel"]
+        gather_inputs = [
+            tensor if tensor_dim % tensor.dim() == 0 and tensor.is_contiguous()
+            else tensor.movedim(tensor_dim % tensor.dim(), 0).contiguous()
+            for tensor in local_tensors
+        ]
+    else:
+        gather_inputs, metadata, padded_numel = _prepare_gather_inputs(
+            local_tensors, tensor_dim, max(1, 512 // first.element_size()), shard_size, stage_metas,
+        )
+        if plan_cache is not None:
+            plan_cache.update(signature=signature, metadata=metadata, padded_numel=padded_numel)
+    source = _get_or_alloc_buffer(
+        buffer_cache, ("pipeline_send", first.dtype, first.device), padded_numel, first.dtype, first.device,
+    )[:padded_numel]
+    source.zero_()
+    view_key = (source.data_ptr(), signature)
+    cached_views = buffer_cache.get("pipeline_views") if buffer_cache is not None else None
+    if cached_views is None or cached_views[0] != view_key:
+        destinations = [source[meta.offset:meta.offset + meta.actual_numel].view_as(tensor)
+                        for tensor, meta in zip(gather_inputs, metadata)]
+        if buffer_cache is not None:
+            buffer_cache["pipeline_views"] = (view_key, destinations)
+    else:
+        destinations = cached_views[1]
+    torch._foreach_copy_(destinations, gather_inputs)
+    return PreparedMuonGather(source, local_tensors, metadata, tensor_dim, shard_size, keep_indices)
+
+
+def launch_muon_gather(
+        local_tensors: List[torch.Tensor],
+        shard_pg: dist.ProcessGroup,
+        tensor_dim: int,
+        stage_metas: List[ParamShardStageMeta],
+        keep_indices: set,
+        buffer_cache: Dict,
+) -> PendingMuonGather:
+    """Prepare and submit a single-axis asynchronous gather."""
+    return prepare_muon_gather(local_tensors, shard_pg, tensor_dim, stage_metas, keep_indices).launch(
+        shard_pg, buffer_cache,
+    )

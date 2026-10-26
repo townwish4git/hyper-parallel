@@ -118,6 +118,7 @@ _FAMILY_ALIASES: Dict[str, str] = {}
 _FAMILY_DIR_ALIASES = {
     "deepseekv2": "deepseek_v3",
     "qwen35text": "qwen3_5",
+    "qwen35moetext": "qwen3_5_moe",
     # Kimi-K2.6: the K2.6 checkpoint keeps the native Transformers
     # ``model_type``/architecture spelling (kimi_k25) while the family is
     # registered from ``models/kimi_k26/``.

@@ -39,9 +39,19 @@ def _load_attention():
     return attention
 
 
+def _register_materialization(model):
+    """Load the optional HF implementation only when constructing a model."""
+    from hyper_parallel.models.qwen3.adapter.materialization import (  # pylint: disable=C0415
+        register_materialization,
+    )
+
+    register_materialization(model)
+
+
 QWEN3_ADAPTER_SPEC = ModelAdapterSpec(
     architecture="Qwen3ForCausalLM",
     model_type="qwen3",
+    materialization=_register_materialization,
     replacements=_load_replacements,
     attention=_load_attention,
     sharding_rules=build_parameter_sharding_rules,

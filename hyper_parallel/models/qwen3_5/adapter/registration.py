@@ -29,9 +29,19 @@ def _load_context_parallel():
     return context_parallel
 
 
+def _register_materialization(model):
+    """Load the optional HF implementation only when constructing a model."""
+    from hyper_parallel.models.qwen3_5.adapter.materialization import (  # pylint: disable=C0415
+        register_materialization,
+    )
+
+    register_materialization(model)
+
+
 QWEN3_5_ADAPTER_SPEC = ModelAdapterSpec(
     architecture="Qwen3_5ForConditionalGeneration",
     model_type="qwen3_5",
+    materialization=_register_materialization,
     context_parallel=_load_context_parallel,
     sharding_rules=build_parameter_sharding_rules,
 )
@@ -39,6 +49,7 @@ QWEN3_5_ADAPTER_SPEC = ModelAdapterSpec(
 QWEN3_5_TEXT_ADAPTER_SPEC = ModelAdapterSpec(
     architecture="Qwen3_5ForCausalLM",
     model_type="qwen3_5_text",
+    materialization=_register_materialization,
     context_parallel=_load_context_parallel,
     sharding_rules=build_parameter_sharding_rules,
 )

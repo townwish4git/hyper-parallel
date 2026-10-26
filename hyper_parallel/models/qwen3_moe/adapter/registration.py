@@ -62,9 +62,19 @@ def _load_loss():
     return chunked_loss
 
 
+def _register_materialization(model):
+    """Load the optional HF implementation only when constructing a model."""
+    from hyper_parallel.models.qwen3_moe.adapter.materialization import (  # pylint: disable=C0415
+        register_materialization,
+    )
+
+    register_materialization(model)
+
+
 QWEN3_MOE_ADAPTER_SPEC = ModelAdapterSpec(
     architecture="Qwen3MoeForCausalLM",
     model_type="qwen3_moe",
+    materialization=_register_materialization,
     replacements=_load_replacements,
     attention=_load_attention,
     context_parallel=_load_context_parallel,

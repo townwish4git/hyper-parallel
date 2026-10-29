@@ -23,7 +23,7 @@ from dataclasses import is_dataclass, replace
 from types import SimpleNamespace
 from typing import Any, Literal, Optional, Union
 
-import torch
+import torch  # pylint: disable=forbidden-backend-import
 from transformers import (
     AutoModelForCausalLM,
     AutoModelForImageTextToText,
@@ -468,6 +468,7 @@ class _BaseHyperAutoModelClass:
         freeze_config=None,
         activation_checkpoint: Optional[str] = None,
         activation_checkpoint_selection: Optional[Any] = None,
+        vision_activation_checkpoint: Optional[Any] = None,
         swap_inputs: bool = False,
         allow_cache_entry_mutation: bool = False,
         activation_swap: str = "none",
@@ -538,6 +539,7 @@ class _BaseHyperAutoModelClass:
             distributed_setup=distributed_setup,
             activation_checkpoint=activation_checkpoint,
             activation_checkpoint_selection=activation_checkpoint_selection,
+            vision_activation_checkpoint=vision_activation_checkpoint,
             swap_inputs=swap_inputs,
             allow_cache_entry_mutation=allow_cache_entry_mutation,
             activation_swap=activation_swap,

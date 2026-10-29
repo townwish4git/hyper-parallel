@@ -16,10 +16,10 @@
 
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import Iterator, Mapping
+from typing import Any, Iterator, Mapping
 
 from hyper_parallel.core.dtensor.device_mesh import DeviceMesh
 from hyper_parallel.distributed.encoder_parallel.contracts import EncoderSegment
@@ -83,3 +83,51 @@ def activate_encoder_attention(context: EncoderAttentionContext) -> Iterator[Enc
         yield context
     finally:
         _ACTIVE_CONTEXT.reset(token)
+
+
+class _EncoderReplayContext:
+    """Restore one block's execution geometry with a fresh audit on each replay."""
+
+    def __init__(self, context: EncoderAttentionContext, expected: frozenset[str]) -> None:
+        """Capture immutable geometry and the attention names of one block."""
+        self.segments = context.segments
+        self.cp_mesh = context.cp_mesh
+        self.declared_heads = dict(context.declared_heads)
+        self.expected = expected
+        self.scope = None
+        self.context = None
+
+    def __enter__(self) -> EncoderAttentionContext:
+        """Activate fresh replay state without changing the original forward audit."""
+        self.context = EncoderAttentionContext(self.segments, self.cp_mesh, self.declared_heads, self.expected)
+        self.scope = activate_encoder_attention(self.context)
+        return self.scope.__enter__()
+
+    def __exit__(self, exc_type: Any, exc: Any, traceback: Any) -> bool:
+        """Check the replay audit and always restore the enclosing context."""
+        try:
+            if exc_type is None:
+                self.context.assert_exactly_once()
+        finally:
+            self.scope.__exit__(exc_type, exc, traceback)
+            self.scope = None
+            self.context = None
+        return False
+
+
+def encoder_checkpoint_contexts(module_fqn: str) -> tuple[Any, Any]:
+    """Capture this invocation's CP geometry without retaining a batch or mutable audit.
+
+    Args:
+        module_fqn: Logical path of the checkpointed vision block.
+
+    Returns:
+        Original-forward and backward-replay contexts for non-reentrant checkpointing.
+    """
+    context = current_encoder_attention_context()
+    if context is None:
+        return nullcontext(), nullcontext()
+    expected = frozenset(name for name in context.expected if name.startswith(f"{module_fqn}."))
+    if not expected:
+        raise ValueError(f"checkpoint region has no encoder attention: {module_fqn}")
+    return nullcontext(), _EncoderReplayContext(context, expected)

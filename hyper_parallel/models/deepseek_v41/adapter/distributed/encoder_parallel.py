@@ -178,8 +178,10 @@ class DeepseekV41VisionBridge:
             raise NotImplementedError(
                 "unsupported encoder loss layout; config_path=accelerator.loss_parallel"
             )
+        safe_blocks = {id(block) for block in self.vision.blocks
+                       if getattr(block, "_hp_recompute_component", None) == "vision"}
         forbidden = [name for name, module in self.vision.named_modules()
-                     if isinstance(module, CheckpointWrapper)]
+                     if isinstance(module, CheckpointWrapper) and id(module) not in safe_blocks]
         forbidden.extend(name for name, module in self.aligner.named_modules()
                          if isinstance(module, CheckpointWrapper))
         if forbidden:

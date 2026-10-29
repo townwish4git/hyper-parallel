@@ -38,6 +38,7 @@ from hyper_parallel.models.build_options import (
     FSDP2Config,
     FSDP2MixedPrecisionConfig,
     ModelBuildOptions,
+    VisionActivationCheckpointConfig,
     normalize_build_options,
 )
 
@@ -123,6 +124,7 @@ __all__ = [
     "TopologyConstraint",
     "get_model_adapter",
     "normalize_build_options",
+    "VisionActivationCheckpointConfig",
     "rebuild_materialized_state",
     "register_materialized_state_hook",
     "register_model_adapter",

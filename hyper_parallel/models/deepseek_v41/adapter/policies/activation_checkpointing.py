@@ -18,6 +18,7 @@ from functools import partial
 from typing import Any
 
 from hyper_parallel.models.adapter_spec import RecomputePolicy
+from hyper_parallel.distributed.encoder_parallel.attention import encoder_checkpoint_contexts
 from hyper_parallel.models.deepseek_v41.adapter.policies.shared_state import (
     attention_role,
     configure_shared_state,
@@ -66,6 +67,12 @@ def build_recompute_policy() -> RecomputePolicy:
             partial(_attention_stays_resident, resident=resident) if resident else None
         ),
         on_applied=partial(configure_shared_state, roles=recomputed),
+        component_regions={
+            "vision": RecomputePolicy(
+                region_patterns=("model.vision.blocks.*",),
+                context_fn=encoder_checkpoint_contexts,
+            ),
+        },
     )
 
 

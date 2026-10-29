@@ -18,8 +18,9 @@
 import fnmatch
 import logging
 import weakref
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from functools import partial
 from typing import Any, Optional
 
 import torch
@@ -37,6 +38,7 @@ from hyper_parallel.core.activation_memory.swap import (
     _teardown_wired_swap_layers,
 )
 from hyper_parallel.models.adapter_spec import RecomputePolicy
+from hyper_parallel.models.build_options import VisionActivationCheckpointConfig
 from hyper_parallel.models.registry import get_model_adapter
 
 logger = logging.getLogger(__name__)
@@ -801,6 +803,68 @@ def _adapter_recompute_spec(model: nn.Module):
     if not isinstance(recompute_policy, RecomputePolicy):
         raise TypeError("ModelAdapterSpec.recompute must return RecomputePolicy")
     return recompute_policy
+
+
+def apply_vision_activation_checkpointing(
+    model: nn.Module,
+    config: Optional[VisionActivationCheckpointConfig | Mapping[str, Any]] = None,
+    *,
+    enable_compile: bool = False,
+    activation_swap: str = "none",
+) -> nn.Module:
+    """Wrap model-declared vision blocks independently of decoder checkpointing.
+
+    Args:
+        model: Model after module replacement and sharding planning.
+        config: Vision-only mode and zero-based block selection.
+        enable_compile: Whether execution compilation was requested.
+        activation_swap: Existing model-wide activation-swap mode.
+
+    Returns:
+        The same model with its selected vision blocks wrapped.
+    """
+    if config is None:
+        return model
+    if isinstance(config, Mapping):
+        config = VisionActivationCheckpointConfig(**dict(config))
+    if not isinstance(config, VisionActivationCheckpointConfig):
+        raise TypeError("vision_activation_checkpoint must be a VisionActivationCheckpointConfig or mapping")
+    if config.mode == "off":
+        return model
+    if enable_compile or activation_swap != "none":
+        raise ValueError("vision activation checkpoint requires compile.enabled=false and activation_swap=none")
+    policy = _adapter_recompute_spec(model).component_regions.get("vision")
+    if policy is None:
+        raise ValueError("the model adapter does not declare vision recompute regions")
+    names, total = _select_vision_recompute_targets(model, policy, config)
+    for name in names:
+        module = model.get_submodule(name)
+        if _is_checkpoint_wrapped(module):
+            raise ValueError(f"vision block is already checkpoint wrapped: {name}")
+        kwargs = {"early_stop": False}
+        if policy.context_fn is not None:
+            kwargs["context_fn"] = partial(policy.context_fn, name)
+        wrapped = checkpoint_wrapper(module, **kwargs)
+        wrapped._hp_recompute_component = "vision"  # pylint: disable=protected-access
+        parent_name, child_name = name.rsplit(".", 1)
+        setattr(model.get_submodule(parent_name), child_name, wrapped)
+    logger.info("Vision recompute wrapped %d/%d blocks", len(names), total)
+    return model
+
+
+def _select_vision_recompute_targets(
+    model: nn.Module, policy: RecomputePolicy, config: VisionActivationCheckpointConfig,
+) -> tuple[list[str], int]:
+    """Select outermost visual regions in model registration order."""
+    matches = dict.fromkeys(name for name, _ in model.named_modules()
+                            if any(fnmatch.fnmatchcase(name, pattern) for pattern in policy.region_patterns))
+    names = [name for name in matches if not any(name.startswith(f"{other}.") for other in matches)]
+    if not names:
+        raise ValueError("vision recompute patterns matched no vision blocks")
+    indices = list(range(len(names))) if config.layer_indices is None else config.layer_indices
+    if max(indices) >= len(names):
+        raise ValueError(f"vision recompute layer index {max(indices)} exceeds maximum {len(names) - 1}")
+    return [names[index] for index in indices], len(names)
 
 
 def _validate_selected_layer_indices(

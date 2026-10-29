@@ -29,8 +29,8 @@ Provider fields stay ``None`` until the family's adapter modules land
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, Callable, Optional
+from dataclasses import dataclass, field
+from typing import Any, Callable, Mapping, Optional
 
 
 @dataclass(frozen=True)
@@ -63,12 +63,18 @@ class RecomputePolicy:
     path cannot express, such as "keep the attention of every role that does not
     recompute out of the region". It receives ``(module_fqn, module)`` and is
     evaluated together with ``exclude_patterns``.
+
+    ``component_regions`` declares independently selected branches such as
+    vision blocks. A component's ``context_fn(module_fqn)`` captures per-call
+    execution state and returns its forward/recompute context pair.
     """
 
     region_patterns: tuple[str, ...]
     exclude_patterns: tuple[str, ...] = ()
     exclude_predicate: Optional[Callable[[str, Any], bool]] = None
     on_applied: Optional[Callable[[Any], None]] = None
+    component_regions: Mapping[str, "RecomputePolicy"] = field(default_factory=dict)
+    context_fn: Optional[Callable[[str], tuple[Any, Any]]] = None
 
 
 @dataclass(frozen=True)

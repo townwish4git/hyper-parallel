@@ -139,11 +139,15 @@ class TestBuildOptionsFields(unittest.TestCase):
     @arg_mark(plat_marks=["cpu_linux", "cpu_macos"], level_mark="level0",
               card_mark="allcards", essential_mark="essential")
     def test_model_build_options_fields(self):
-        """ModelBuildOptions covers device/dtype/activation/compile/validate/low-precision."""
+        """Feature: model build option coverage.
+
+        Description: Inspect device, precision, activation, compile, and validation fields.
+        Expectation: Vision checkpoint options have an independent default.
+        """
         self.assertEqual(
             [name for name, _ in _field_snapshot(ModelBuildOptions)],
             [
-                "device", "model_init_dtype", "activation_checkpoint",
+                "device", "model_init_dtype", "activation_checkpoint", "vision_activation_checkpoint",
                 "activation_swap", "swap_inputs", "compile",
                 "validate_placement", "low_precision",
             ],

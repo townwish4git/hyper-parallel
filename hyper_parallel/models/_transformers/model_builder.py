@@ -48,6 +48,7 @@ from hyper_parallel.models.materialization import (
 )
 from hyper_parallel.distributed.activation_checkpoint import (
     _apply_activation_checkpointing,
+    apply_vision_activation_checkpointing,
 )
 from hyper_parallel.distributed.attention_swap import (
     apply_attention_swap,
@@ -532,6 +533,7 @@ def _apply_activation_features(
     swap_inputs: bool = False,
     selection: Optional[Any] = None,
     allow_cache_entry_mutation: bool = False,
+    vision_activation_checkpoint: Optional[Any] = None,
 ) -> nn.Module:
     """Apply activation checkpointing and attention swap in execution order."""
     if activation_checkpoint not in (None, "off"):
@@ -543,6 +545,9 @@ def _apply_activation_features(
             selection=selection,
             allow_cache_entry_mutation=allow_cache_entry_mutation,
         )
+    model = apply_vision_activation_checkpointing(
+        model, vision_activation_checkpoint, enable_compile=compile_for_execution, activation_swap=activation_swap,
+    )
     validate_attention_swap(
         activation_swap,
         activation_checkpoint=activation_checkpoint,
@@ -723,6 +728,7 @@ def apply_model_infrastructure(
     compile_config: Optional[Union[CompileConfig, dict]] = None,
     activation_checkpoint: Optional[str] = None,
     activation_checkpoint_selection: Optional[Any] = None,
+    vision_activation_checkpoint: Optional[Any] = None,
     activation_swap: str = "none",
     swap_inputs: bool = False,
     allow_cache_entry_mutation: bool = False,
@@ -743,6 +749,36 @@ def apply_model_infrastructure(
     materialization/loading -> model_init_dtype conversion -> per-layer compile.
     Placement validation keeps the DTensor placement path and skips compile;
     FSDP2 consumes DTensor parameter layouts in both modes.
+
+    Args:
+        model: Model whose infrastructure is applied in place.
+        mesh: Resolved parallel topology.
+        sharding_planner: Parameter and activation layout planner.
+        fsdp2_manager: Manager of FSDP execution units and parameter lifetimes.
+        peft_config: Optional parameter-efficient tuning configuration.
+        qat_config: Optional quantization-aware training configuration.
+        fp8_config: Optional FP8 training configuration.
+        freeze_config: Optional parameter-freezing rules.
+        compile_config: Layer or graph compiler options.
+        activation_checkpoint: Existing decoder checkpoint mode.
+        activation_checkpoint_selection: Decoder recompute region selection.
+        vision_activation_checkpoint: Independent vision block checkpoint options.
+        activation_swap: Activation offloading mode.
+        swap_inputs: Whether decoder checkpoint inputs are offloaded.
+        allow_cache_entry_mutation: Whether selective caches allow deterministic mutations.
+        is_meta_device: Whether parameter storage requires materialization.
+        is_hf_model: Whether construction uses a native transformer model.
+        device: Destination for materialized model tensors.
+        load_base_model: Whether pretrained weights are loaded.
+        pretrained_path: Source of pretrained weights.
+        validate_placement: Whether to retain placement validation execution.
+        low_precision_config: Optional low-precision replacement options.
+        model_init_dtype: Floating-point dtype applied after loading.
+        codegen_artifact_dir: Optional generated-model artifact directory.
+        **kwargs: Additional model-owned construction context.
+
+    Returns:
+        The prepared execution model.
     """
 
     distributed_setup = kwargs.get("distributed_setup")
@@ -789,6 +825,7 @@ def apply_model_infrastructure(
         swap_inputs=swap_inputs,
         selection=activation_checkpoint_selection,
         allow_cache_entry_mutation=allow_cache_entry_mutation,
+        vision_activation_checkpoint=vision_activation_checkpoint,
     )
     external = _create_external_state(
         model, mesh, source_shard_info, device, is_meta_device, model_init_dtype,

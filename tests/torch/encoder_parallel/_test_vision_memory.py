@@ -14,6 +14,7 @@
 
 import os
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 import torch
@@ -26,7 +27,11 @@ except ImportError:
     torch_npu = None
 
 from hyper_parallel.core.dtensor.device_mesh import init_device_mesh
+from hyper_parallel.core.dtensor.dtensor import DTensor, SkipDTensorDispatch
+from hyper_parallel.core.fully_shard import fully_shard
+from hyper_parallel.core.fully_shard.utils import MixedPrecisionPolicy
 from hyper_parallel.data.batching.get_batch import OmniParallelBatch
+from hyper_parallel.distributed.activation_checkpoint import apply_vision_activation_checkpointing
 from hyper_parallel.distributed.encoder_parallel.config import EncoderParallelConfig
 from hyper_parallel.distributed.encoder_parallel.runtime import EncoderParallelRuntime
 from hyper_parallel.distributed.encoder_parallel.transport import EncoderParallelBatchTransport
@@ -34,6 +39,7 @@ from hyper_parallel.models.deepseek_v41.adapter.distributed.encoder_parallel imp
     get_deepseek_v41_encoder_parallel_spec,
     replace_vision_attention,
 )
+from hyper_parallel.models.deepseek_v41.adapter import registration  # pylint: disable=unused-import
 from hyper_parallel.models.deepseek_v41.vision import (
     DeepseekV41VisionAligner,
     DeepseekV41VisionAttention,
@@ -60,7 +66,33 @@ def _init_backend(backend):
     return device
 
 
-def _make_runtime(device, cp_size, tp_size, patch_size=2):
+class _VisualModel(nn.Module):
+    """Provide a real model forward so FSDP roots participate in encoder execution."""
+
+    def __init__(self, config: SimpleNamespace) -> None:
+        """Construct visual execution units and a trainable root parameter."""
+        super().__init__()
+        self.config = config
+        self.model = nn.Module()
+        self.model.vision = DeepseekV41VisionTower(config)
+        self.model.aligner = DeepseekV41VisionAligner(config)
+        self.loss_scale = nn.Parameter(torch.ones(1))
+
+    def forward(self, plan: Any, inputs: Any) -> tuple[Any, torch.Tensor]:
+        """Execute routed visual work through the managed model root.
+
+        Args:
+            plan: Encoder work and decoder feature destinations.
+            inputs: Original images or prepared device patches.
+
+        Returns:
+            Routed records and the graph-connected local objective.
+        """
+        records, loss = _encode_loss(plan, inputs)
+        return records, loss * self.loss_scale.sum()
+
+
+def _make_runtime(device, cp_size, tp_size, patch_size=2, recompute=False, fsdp=False, param_dtype=None):
     """Build native visual modules and the requested encoder/decoder topology."""
     torch.manual_seed(41)
     config = SimpleNamespace(
@@ -69,14 +101,12 @@ def _make_runtime(device, cp_size, tp_size, patch_size=2):
         v41_vision_num_hidden_layers=2, v41_vision_downsample_ratio=1, hidden_size=16,
         model_type="deepseek_v41",
     )
-    model = nn.Module()
-    model.config = config
-    model.model = nn.Module()
-    model.model.vision = DeepseekV41VisionTower(config)
-    model.model.aligner = DeepseekV41VisionAligner(config)
+    model = _VisualModel(config)
     rule = ModuleReplacementSpec(match=("model.vision.blocks.*.attn",), factory=replace_vision_attention,
                                  module_type=DeepseekV41VisionAttention)
     apply_module_replacements(model, compile_module_replacements(model, (rule,)), weights_mapping=[])
+    if recompute:
+        apply_vision_activation_checkpointing(model, {"mode": "full"})
     model.to(device)
     world_size = dist.get_world_size()
     mesh = init_device_mesh(device.type, (world_size // (cp_size * tp_size), cp_size, tp_size),
@@ -88,6 +118,13 @@ def _make_runtime(device, cp_size, tp_size, patch_size=2):
         dp_size=world_size // (cp_size * tp_size), dp_rank=dist.get_rank() // (cp_size * tp_size),
         pp_size=1, sequence_parallel=tp_size > 1, loss_parallel=False,
     )
+    if fsdp:
+        fsdp_mesh = mesh.flatten("vision_fsdp")
+        precision = MixedPrecisionPolicy(param_dtype=param_dtype, reduce_dtype=torch.float32, cast_forward_inputs=False)
+        units = (model.model.vision.patch_embed, *model.model.vision.blocks,
+                 model.model.vision.norm, model.model.aligner, model)
+        for unit in units:
+            fully_shard(unit, mesh=fsdp_mesh, reshard_after_forward=True, mp_policy=precision)
     runtime = EncoderParallelRuntime(
         config=EncoderParallelConfig(enabled=True, encoder_cp_size=2), mesh_context=context,
         model=model, spec=get_deepseek_v41_encoder_parallel_spec(),
@@ -130,14 +167,14 @@ def _compare_transport(model, runtime, source):
     local = get_batch.cp_sharder.shard(source) if runtime.mesh_context.tp_rank == 0 else None
     original = get_batch.tp_broadcaster.broadcast(local, broadcast_all_fields=True)
     reference_plan = runtime.finalize_plan(*runtime.preflight_batch(original))
-    reference_records, reference_loss = _encode_loss(reference_plan, original)
+    reference_records, reference_loss = model(reference_plan, original)
     reference_loss.backward()
     expected = {name: parameter.grad.detach().clone() for name, parameter in model.named_parameters()}
     model.zero_grad(set_to_none=True)
     get_batch.batch_transport = EncoderParallelBatchTransport(runtime=runtime, chunk_bytes=256)
     prepared, _ = get_batch(None, external_batch=source)
     assert "pixel_values" not in prepared, f"complete image payload reached forward: keys={tuple(prepared)}"
-    actual_records, actual_loss = _encode_loss(prepared["encoder_parallel_plan"], prepared["encoder_parallel_inputs"])
+    actual_records, actual_loss = model(prepared["encoder_parallel_plan"], prepared["encoder_parallel_inputs"])
     assert [item.item_id for item, _ in actual_records] == [item.item_id for item, _ in reference_records], (
         f"actual_items={[item.item_id for item, _ in actual_records]}, "
         f"expected_items={[item.item_id for item, _ in reference_records]}"
@@ -222,3 +259,89 @@ def test_npu_input_memory():
         print(f"rank={dist.get_rank()} input peak bytes: original={original_peak}, local={local_peak}", flush=True)
     finally:
         dist.destroy_process_group()
+
+
+def _local_tensor(tensor):
+    """Inspect managed parameter/gradient shards without triggering redistribution."""
+    return tensor.to_local() if isinstance(tensor, DTensor) else tensor
+
+
+def _run_recompute(backend, fsdp=False, param_dtype=None):
+    """Compare recompute on/off through CP, routing, FSDP, and optimizer updates."""
+    device = _init_backend(backend)
+    try:
+        for cp_size, tp_size in ((2, 2), (2, 1)):
+            reference, reference_runtime = _make_runtime(device, cp_size, tp_size, fsdp=fsdp, param_dtype=param_dtype)
+            candidate, candidate_runtime = _make_runtime(device, cp_size, tp_size, recompute=True,
+                                                         fsdp=fsdp, param_dtype=param_dtype)
+            runtimes = (reference_runtime, candidate_runtime)
+            optimizers = (torch.optim.SGD(reference.parameters(), lr=0.01),
+                          torch.optim.SGD(candidate.parameters(), lr=0.01))
+            batchers = []
+            for runtime in runtimes:
+                batcher = OmniParallelBatch(mesh_context=runtime.mesh_context, device=device)
+                batcher.batch_transport = EncoderParallelBatchTransport(runtime=runtime)
+                batchers.append(batcher)
+            for step in range(2):
+                if step == 0:
+                    source = _image_batch()
+                elif reference_runtime.mesh_context.dp_rank:
+                    source = _image_batch(grids=(), starts=())
+                else:
+                    source = _image_batch(grids=((3, 5),), starts=(24,))
+                outputs = []
+                with SkipDTensorDispatch():
+                    for model, batcher in zip((reference, candidate), batchers):
+                        prepared, _ = batcher(None, external_batch=source)
+                        records, loss = model(prepared["encoder_parallel_plan"], prepared["encoder_parallel_inputs"])
+                        outputs.append((tuple(item.item_id for item, _ in records), loss.detach()))
+                        loss.backward()
+                    assert outputs[0][0] == outputs[1][0], (
+                        f"reference_items={outputs[0][0]}, candidate_items={outputs[1][0]}"
+                    )
+                    torch.testing.assert_close(outputs[1][1], outputs[0][1], atol=1e-4, rtol=1e-4)
+                    expected_parameters = dict(reference.named_parameters())
+                    for name, parameter in candidate.named_parameters():
+                        torch.testing.assert_close(
+                            _local_tensor(parameter.grad), _local_tensor(expected_parameters[name].grad),
+                            atol=2e-4, rtol=2e-4, msg=lambda message: f"gradient {name}: {message}",
+                        )
+                    for optimizer in optimizers:
+                        optimizer.step()
+                        optimizer.zero_grad(set_to_none=True)
+                    for name, parameter in candidate.named_parameters():
+                        torch.testing.assert_close(
+                            _local_tensor(parameter), _local_tensor(expected_parameters[name]),
+                            atol=2e-5, rtol=2e-5, msg=lambda message: f"parameter {name}: {message}",
+                        )
+        if dist.get_rank() == 0:
+            print(f"{backend}: vision recompute CP/routing/FSDP={fsdp}/{param_dtype} parity passed", flush=True)
+    finally:
+        dist.destroy_process_group()
+
+
+def test_cpu_recompute():
+    """Feature: vision recompute with Encoder-CP.
+
+    Description: Compare recompute on/off over two steps and mixed image/text DP inputs.
+    Expectation: Local losses, visual gradients, and optimizer updates match on Gloo.
+    """
+    _run_recompute("gloo")
+
+
+def test_npu_recompute_fsdp():
+    """Feature: vision recompute with Encoder-CP and FSDP.
+
+    Description: Run checkpointed visual units and a managed root on four NPU ranks.
+    Expectation: Losses, gradient shards, and optimizer updates match recompute off.
+    """
+    _run_recompute("hccl", fsdp=True)
+
+
+def test_npu_recompute_fsdp_bf16():
+    """Feature: BF16 vision recompute with Encoder-CP and FSDP.
+
+    Description: Recompute visual blocks with BF16 parameters and FP32 gradient reduction.
+    Expectation: Losses, gradient shards, and optimizer updates match recompute off.
+    """
+    _run_recompute("hccl", fsdp=True, param_dtype=torch.bfloat16)

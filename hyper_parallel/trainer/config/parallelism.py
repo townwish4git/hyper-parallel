@@ -34,6 +34,7 @@ from hyper_parallel.components.quantization.config import (
     LowPrecisionDtypeScheme,
 )
 from hyper_parallel.distributed.encoder_parallel.config import EncoderParallelConfig
+from hyper_parallel.models.build_options import VisionActivationCheckpointConfig
 from hyper_parallel.models.replacement import (
     ModuleReplacementFactory,
     ModuleReplacementSpec,
@@ -147,6 +148,7 @@ class ActivationCheckpointConfig:
     """
 
     mode: Optional[Literal["off", "full", "selective"]] = "off"
+    vision: VisionActivationCheckpointConfig = field(default_factory=VisionActivationCheckpointConfig)
     swap_inputs: bool = False
     selection: ActivationCheckpointSelection = field(
         default_factory=ActivationCheckpointSelection

@@ -807,3 +807,27 @@ padding 和空 bucket 的 dummy patches 均在 CPU 打包。视觉 RoPE 也仅�
 
 该输入路径自动生效，无需额外配置。它减少完整图片搬运导致的额外显存，视觉特征 gather、aligner
 和 attention 的工作空间仍由原有执行计划决定。直接调用模型的原生图片接口继续接受完整图片。
+
+## 10. 视觉编码重算
+
+视觉 block 的重算独立于语言层配置。下面的配置关闭语言层重算，同时重算全部 ViT blocks：
+
+```yaml
+activation_checkpoint:
+  mode: "off"
+  vision:
+    mode: "full"
+    layer_indices: null
+```
+
+`vision.mode` 默认为 `off`，当前支持 `off` 和 `full`；`layer_indices` 为 `null` 时选择全部视觉
+block，也可设置 `[0, 1, 2]` 等不重复的零起始层号。该选择只针对 `vision.blocks`，不影响语言层的
+`selection`。`mode: off` 时不能指定层号。
+
+启用 Encoder Parallel 时，反向重算恢复对应 micro-batch 的 segments、CP mesh 和 attention
+执行上下文，重新执行完整 block 的 Ulysses 通信。原始 forward 与重算分别校验 attention 调用，
+空 bucket 的 dummy 路径继续参与梯度同步。未启用 Encoder Parallel 时使用普通视觉 attention。
+
+每个选中的 ViT block 是一个独立重算区域。patch embedding、final norm、aligner、特征 gather
+和 decoder 路由位于区域之外，反向重算不重新搬运 CPU 图片。当前不支持视觉 `selective`、输入
+swap 或 compile 组合；开启视觉重算要求 `compile.enabled: false` 和 `activation_swap: none`。

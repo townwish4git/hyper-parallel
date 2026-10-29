@@ -24,7 +24,7 @@ It also hosts the accelerator-discovery primitives (``get_device_type`` /
 no explicit ``ModelBuildOptions.device`` is given — split out of the former
 ``components/utils/device.py`` in stage 7 (05 §10.4). The full runtime
 device API (synchronize, cache/RNG management, ...) lives in
-``hyper_parallel.trainer.runtime.device`` and re-uses these primitives.
+``hyper_parallel.trainer.runtime.device`` and reuses these primitives.
 """
 
 __all__ = [
@@ -32,6 +32,7 @@ __all__ = [
     "FSDP2Config",
     "FSDP2MixedPrecisionConfig",
     "ModelBuildOptions",
+    "VisionActivationCheckpointConfig",
     "normalize_build_options",
     "IS_CUDA_AVAILABLE",
     "IS_NPU_AVAILABLE",
@@ -44,7 +45,7 @@ import logging
 import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any, Literal, Optional
+from typing import Any, Literal, Optional, Union
 
 import torch  # pylint: disable=forbidden-backend-import
 
@@ -134,7 +135,7 @@ class CompileConfig:
     options: Optional[dict[str, Any]] = None
     dynamo_cache_size_limit: int = 256
     # Joint-graph input paths, e.g. model_inputs.input_ids: [0, 1].
-    dynamic_arg_dims: Optional[dict[str, int | list[int]]] = None
+    dynamic_arg_dims: Optional[dict[str, Union[int, list[int]]]] = None
     fsdp_allgather_prefetch: bool = True
     fsdp_overlap_grad_reduce: bool = True
     max_in_flight_gb: float = 0.25
@@ -167,6 +168,10 @@ class CompileConfig:
             raise ValueError(
                 "compile.options cannot be combined with a non-default compile.mode"
             )
+        self._validate_cache_size_limit()
+
+    def _validate_cache_size_limit(self) -> None:
+        """Require a positive integer bound on cached compiled graphs."""
         if (
             isinstance(self.dynamo_cache_size_limit, bool)
             or not isinstance(self.dynamo_cache_size_limit, int)
@@ -238,6 +243,29 @@ _ACTIVATION_SWAP_MODES = ("none", "attention")
 
 
 @dataclass
+class VisionActivationCheckpointConfig:
+    """Independent per-block vision recomputation; null indices select all blocks."""
+
+    mode: Literal["off", "full"] = "off"
+    layer_indices: Optional[list[int]] = None
+
+    def __post_init__(self) -> None:
+        """Reject unsupported modes and ambiguous or invalid layer selections."""
+        if self.mode not in ("off", "full"):
+            raise ValueError("activation_checkpoint.vision.mode must be off or full")
+        if self.layer_indices is None:
+            return
+        if self.mode == "off":
+            raise ValueError("activation_checkpoint.vision.layer_indices requires mode=full")
+        if not isinstance(self.layer_indices, list) or not self.layer_indices:
+            raise ValueError("activation_checkpoint.vision.layer_indices must be a non-empty list or null")
+        if any(isinstance(index, bool) or not isinstance(index, int) or index < 0 for index in self.layer_indices):
+            raise ValueError("activation_checkpoint.vision.layer_indices must contain non-negative integers")
+        if len(set(self.layer_indices)) != len(self.layer_indices):
+            raise ValueError("activation_checkpoint.vision.layer_indices must not contain duplicates")
+
+
+@dataclass
 class ModelBuildOptions:
     """Trainer-independent options for one model build.
 
@@ -252,6 +280,9 @@ class ModelBuildOptions:
     # from scratch; None preserves the initialization-path dtype.
     model_init_dtype: Optional[Literal["float16", "bfloat16", "float32"]] = None
     activation_checkpoint: Optional[Literal["off", "full", "selective"]] = None
+    vision_activation_checkpoint: VisionActivationCheckpointConfig = field(
+        default_factory=VisionActivationCheckpointConfig
+    )
     activation_swap: Literal["none", "attention"] = "none"
     swap_inputs: bool = False
     compile: CompileConfig = field(default_factory=CompileConfig)
@@ -288,16 +319,11 @@ class ModelBuildOptions:
                 "activation_swap must be one of none, attention; "
                 f"got {self.activation_swap!r}"
             )
+        self._normalize_vision_checkpoint()
         for name in ("swap_inputs", "validate_placement"):
             if not isinstance(getattr(self, name), bool):
                 raise TypeError(f"ModelBuildOptions.{name} must be a bool")
-        if isinstance(self.compile, Mapping):
-            self.compile = CompileConfig(**dict(self.compile))
-        elif not isinstance(self.compile, CompileConfig):
-            raise TypeError(
-                "ModelBuildOptions.compile must be a CompileConfig or a "
-                f"mapping; got {type(self.compile).__name__}"
-            )
+        self._normalize_compile()
         if isinstance(self.low_precision, Mapping):
             self.low_precision = LowPrecisionConfig(**dict(self.low_precision))
         elif self.low_precision is not None and not isinstance(
@@ -306,6 +332,25 @@ class ModelBuildOptions:
             raise TypeError(
                 "ModelBuildOptions.low_precision must be a LowPrecisionConfig, "
                 f"a mapping, or None; got {type(self.low_precision).__name__}"
+            )
+
+    def _normalize_vision_checkpoint(self) -> None:
+        """Normalize independent vision activation-checkpoint options."""
+        if isinstance(self.vision_activation_checkpoint, Mapping):
+            self.vision_activation_checkpoint = VisionActivationCheckpointConfig(
+                **dict(self.vision_activation_checkpoint)
+            )
+        elif not isinstance(self.vision_activation_checkpoint, VisionActivationCheckpointConfig):
+            raise TypeError("vision_activation_checkpoint must be a VisionActivationCheckpointConfig or mapping")
+
+    def _normalize_compile(self) -> None:
+        """Normalize the model compiler options without Trainer dependencies."""
+        if isinstance(self.compile, Mapping):
+            self.compile = CompileConfig(**dict(self.compile))
+        elif not isinstance(self.compile, CompileConfig):
+            raise TypeError(
+                "ModelBuildOptions.compile must be a CompileConfig or a "
+                f"mapping; got {type(self.compile).__name__}"
             )
 
     @classmethod

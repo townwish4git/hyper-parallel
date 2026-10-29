@@ -51,3 +51,33 @@ def test_npu_input_memory():
     Expectation: Local-shard input peak saves at least one third of the payload.
     """
     torchrun_case(_WORKER, "test_npu_input_memory", num_proc=2)
+
+
+@arg_mark(["cpu_linux"], "level1", "allcards", "essential")
+def test_cpu_recompute():
+    """Feature: context-parallel vision recompute.
+
+    Description: Launch four Gloo workers with recompute on and off.
+    Expectation: Losses, gradients, and optimizer updates match.
+    """
+    torchrun_case(_WORKER, "test_cpu_recompute", num_proc=4)
+
+
+@arg_mark(["platform_ascend910b"], "level1", "allcards", "essential")
+def test_npu_recompute_fsdp():
+    """Feature: context-parallel vision recompute with FSDP.
+
+    Description: Launch four HCCL workers with managed visual blocks and model roots.
+    Expectation: Losses, gradient shards, and optimizer updates match recompute off.
+    """
+    torchrun_case(_WORKER, "test_npu_recompute_fsdp", num_proc=4)
+
+
+@arg_mark(["platform_ascend910b"], "level1", "allcards", "essential")
+def test_npu_recompute_fsdp_bf16():
+    """Feature: BF16 context-parallel vision recompute with FSDP.
+
+    Description: Launch four HCCL workers with BF16 parameters and FP32 gradient reduction.
+    Expectation: Losses, gradient shards, and optimizer updates match recompute off.
+    """
+    torchrun_case(_WORKER, "test_npu_recompute_fsdp_bf16", num_proc=4)

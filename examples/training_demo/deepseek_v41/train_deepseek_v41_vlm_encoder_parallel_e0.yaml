@@ -167,6 +167,9 @@ mixed_precision:
 
 activation_checkpoint:
   mode: "off"
+  vision:
+    mode: "full"
+    layer_indices: null
 
 activation_swap: none
 
@@ -186,7 +189,7 @@ dataset:
   data_transform:
     _target_: hyper_parallel.models.deepseek_v41.adapter.data.transform_fn.build_deepseek_v41_omni_transform
     max_seq_len: 4096
-    sequence_alignment: 8
+    sample_alignment_size: 8
   _target_: hyper_parallel.data.omni.build_dataset.build_online_omni_mapping_dataset
   data_path: ./output/training_demo/deepseek_v41/mm_data/deepseek_v41_messages/train.jsonl
   data_config: {}

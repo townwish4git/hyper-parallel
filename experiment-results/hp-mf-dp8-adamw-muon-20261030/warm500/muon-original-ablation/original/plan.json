@@ -1,0 +1,36 @@
+{
+  "baseline_commit": "8d1e0d513e40ac64dea4b28db898c1f19ef8d906",
+  "aligned_commit": "867967f482bff8fe4f11279a9633053301d7900d",
+  "removed_commits": [
+    "b743f77eca143289fd801c9f70ab2e945901d2b5",
+    "867967f482bff8fe4f11279a9633053301d7900d"
+  ],
+  "training_steps": 500,
+  "new_hp_run": "muon_original/hp/formal",
+  "reused_mf_reference": "muon/mf/formal",
+  "reused_aligned_hp_reference": "muon/hp/formal",
+  "configuration_changes": [
+    {
+      "path": "optimizer.muon_layout",
+      "before": "mindformers",
+      "after": "absent: original adapter API"
+    }
+  ],
+  "all_other_yaml_fields_exact": true,
+  "fresh_optimizer": true,
+  "shared_model_anchor": "warm500/anchor",
+  "shared_data": "warm500/data",
+  "ns_variant": "legacy",
+  "ns_steps": 4,
+  "helper_sha256": {
+    "run_hp.py": "576383792483338bb635555f44a82e5c7ce1caf7abf0ee2e0c75fe604a36f977",
+    "compare.py": "cdc28464f9b01e318d45d9fdf87427a68a5e872bd1847a377cf43f7a00bbd413"
+  },
+  "reference_sha256": {
+    "anchor/manifest.json": "c53bfb7241196674a8648e1cf1268cff4c825f97ce832debd7f2623d2e1fbda5",
+    "data/manifest.json": "9d57370a2e585e0df88b6f551c070bedf97b272e5eb46960ef92661b48f4c838",
+    "muon/mf/formal/evidence/metrics.jsonl": "526417938036230b508282d97bea28498a45c7d61f0a63c076ddb46bdc7b01bf",
+    "muon/hp/formal/evidence/metrics.jsonl": "5d4e0bc95ce215490a150b11d65ddab821ea0e9fb9121d785eefc0010da788e6",
+    "muon/hp/formal/config.yaml": "34446da5e07bd5cedb0e3b4bdc75091f50264c4c92d69a9a477009ae5f859f85"
+  }
+}

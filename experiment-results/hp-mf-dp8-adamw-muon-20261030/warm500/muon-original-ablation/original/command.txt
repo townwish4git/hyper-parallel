@@ -1,0 +1,1 @@
+python -m torch.distributed.run --nnodes=1 --nproc_per_node=8 --master_addr=127.0.0.1 --master_port=36020 ${EXPERIMENT_ROOT}/run_hp.py --evidence-dir ${EXPERIMENT_ROOT}/warm500/muon_original/hp/formal/evidence --mmap-prefix ${EXPERIMENT_ROOT}/warm500/data/wikitext_4k_text_document ${EXPERIMENT_ROOT}/warm500/muon_original/hp/formal/config.yaml 

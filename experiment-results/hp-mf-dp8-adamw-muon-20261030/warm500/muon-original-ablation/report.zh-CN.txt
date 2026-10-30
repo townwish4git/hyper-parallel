@@ -1,0 +1,38 @@
+已完成原始HP Muon与MF的500步对照，并复用先前带两个对齐commit的HP结果作比较。
+原版源码为8d1e0d51，移除b743f77e与867967f4两个commit的全部生产代码改动。
+上一轮四组实验未改；本次只新增一个HP原版Muon训练任务，复用相同MF Muon 500步参考。
+模型权重来自MF AdamW预训练step148，正式起始loss约7.677，优化器状态清零。
+仅删除原版不支持的optimizer.muon_layout字段；NS4 legacy、LR、RMS、精度、模型与数据均保持。
+原版Muon的reshape_fn与ns_transform_fn均未启用；807个源码文件逐hash匹配。
+
+original: loss MAE=0.020358250, max_abs=0.049139738 (step499), mean_diff=+0.020341294.
+diff正/负步数=493/7; 末步HP/MF=5.599964619/5.566057682.
+梯度范数平均绝对相对误差=4.075988%.
+
+aligned: loss MAE=0.003836796, max_abs=0.019800901 (step417), mean_diff=-0.003116808.
+diff正/负步数=114/386; 末步HP/MF=5.563115358/5.566057682.
+梯度范数平均绝对相对误差=3.574233%.
+
+diff=HP-MF，原始逐步值，不平滑、不移位、不去均值。
+配置/源码/输入/新优化器状态/500步完成性检查通过，不代表严格数值精度PASS。
+本次同时去掉两个commit，只能衡量两者合并的效果，不能单独归因到其中一个commit。
+原版实际启动命令：
+python -m torch.distributed.run --nnodes=1 --nproc_per_node=8 --master_addr=127.0.0.1 --master_port=36020 ${EXPERIMENT_ROOT}/run_hp.py --evidence-dir ${EXPERIMENT_ROOT}/warm500/muon_original/hp/formal/evidence --mmap-prefix ${EXPERIMENT_ROOT}/warm500/data/wikitext_4k_text_document ${EXPERIMENT_ROOT}/warm500/muon_original/hp/formal/config.yaml
+
+本次实验，原版MAE为对齐版的5.306055倍；加入两个commit后MAE降低81.153607%。
+原版前/后250步mean diff为+0.009672663/+0.031009925，呈明显增长的正偏；对齐版仍有较小负偏。
+Python及所有记录的软件包版本与上一轮对齐HP环境完全一致。
+
+original，每100步的MAE / mean diff：
+  1-100: 0.002436986 / +0.002352204
+  101-200: 0.010421796 / +0.010421796
+  201-300: 0.024817443 / +0.024817443
+  301-400: 0.031472762 / +0.031472762
+  401-500: 0.032642264 / +0.032642264
+
+aligned，每100步的MAE / mean diff：
+  1-100: 0.001291175 / +0.000674472
+  101-200: 0.002052414 / -0.001701524
+  201-300: 0.004348998 / -0.004134827
+  301-400: 0.005585799 / -0.005136590
+  401-500: 0.005905592 / -0.005285571

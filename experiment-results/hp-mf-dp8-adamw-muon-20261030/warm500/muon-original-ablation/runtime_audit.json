@@ -1,0 +1,14 @@
+{
+  "status": "PASS",
+  "checks_only": "source/configuration/input/state/completion",
+  "steps": 500,
+  "ranks": 8,
+  "source_commit": "8d1e0d513e40ac64dea4b28db898c1f19ef8d906",
+  "only_configuration_change": "remove unsupported optimizer.muon_layout",
+  "fresh_optimizer": true,
+  "alignment_callbacks_absent": true,
+  "actual_inputs_byte_exact_with_aligned_hp": true,
+  "first_step_metrics_exact_with_aligned_hp": true,
+  "native_exit_code": 0,
+  "python_and_package_versions_exact_with_aligned_hp": true
+}

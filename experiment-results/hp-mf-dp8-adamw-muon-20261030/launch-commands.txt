@@ -1,0 +1,11 @@
+AdamW / HP
+python -m torch.distributed.run --nnodes=1 --nproc_per_node=8 --master_addr=127.0.0.1 --master_port=35981 ${EXPERIMENT_ROOT}/run_hp.py --evidence-dir ${EXPERIMENT_ROOT}/hp/formal/evidence --mmap-prefix ${EXPERIMENT_ROOT}/data/wikitext_4k_text_document ${EXPERIMENT_ROOT}/hp_exp_config.yaml
+
+AdamW / MF
+msrun --worker_num=8 --local_worker_num=8 --master_addr=127.0.0.1 --master_port=35980 --join=True --log_dir=${EXPERIMENT_ROOT}/mf/tnd-fixed-original-memory/msrun python ${EXPERIMENT_ROOT}/mindformers-tnd-fixed/run_mindformer.py --config ${EXPERIMENT_ROOT}/mf/tnd-fixed-original-memory/config.yaml --register_path ${EXPERIMENT_ROOT}
+
+Muon / HP
+python -m torch.distributed.run --nnodes=1 --nproc_per_node=8 --master_addr=127.0.0.1 --master_port=35981 ${EXPERIMENT_ROOT}/run_hp.py --evidence-dir ${EXPERIMENT_ROOT}/muon/hp/formal/evidence --mmap-prefix ${EXPERIMENT_ROOT}/data/wikitext_4k_text_document ${EXPERIMENT_ROOT}/muon/hp_exp_config.yaml
+
+Muon / MF
+msrun --worker_num=8 --local_worker_num=8 --master_addr=127.0.0.1 --master_port=35980 --join=True --log_dir=${EXPERIMENT_ROOT}/muon/mf/formal/msrun python ${EXPERIMENT_ROOT}/mindformers-tnd-fixed/run_mindformer.py --config ${EXPERIMENT_ROOT}/muon/mf/formal/config.yaml --register_path ${EXPERIMENT_ROOT}

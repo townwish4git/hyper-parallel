@@ -76,8 +76,8 @@ class TestMegaMoeFunction(unittest.TestCase):
         self.assertEqual(tuple(placeholder.shape), (1, 4))
         self.assertNotEqual(placeholder.data_ptr(), 0)
 
-    def test_eoi_weight_operands_and_gradients_are_zero_copy_views(self) -> None:
-        """Native EOI operands retain storage and gradients restore caller orientation."""
+    def test_eoi_weight_operands_and_gradients_keep_contiguous_layout(self) -> None:
+        """Native EOI operands and gradients already match the parameter storage layout."""
         spec = SimpleNamespace(
             expert_weight_layout="EOI",
             local_experts=2,
@@ -97,18 +97,13 @@ class TestMegaMoeFunction(unittest.TestCase):
             gate_up,
             down,
         )
-        restored_gate_up = function_module._restore_weight_gradient_layout(
-            spec, gradients.grad_weight1
-        )
-        restored_down = function_module._restore_weight_gradient_layout(
-            spec, gradients.grad_weight2
-        )
-        self.assertEqual(tuple(restored_gate_up.shape), tuple(gate_up.shape))
-        self.assertEqual(tuple(restored_down.shape), tuple(down.shape))
-        self.assertEqual(
-            restored_gate_up.data_ptr(), gradients.grad_weight1.data_ptr()
-        )
-        self.assertEqual(restored_down.data_ptr(), gradients.grad_weight2.data_ptr())
+        for weight, gradient in ((gate_up, gradients.grad_weight1), (down, gradients.grad_weight2)):
+            self.assertEqual(gradient.shape, weight.shape,
+                             msg=f"Gradient shape: expected={weight.shape}, actual={gradient.shape}")
+            self.assertEqual(gradient.stride(), weight.stride(),
+                             msg=f"Gradient stride: expected={weight.stride()}, actual={gradient.stride()}")
+            self.assertEqual(torch.count_nonzero(gradient).item(), 0,
+                             msg=f"Empty-expert gradients: expected=0, actual={gradient}")
 
     @arg_mark(plat_marks=["cpu_linux", "cpu_macos"], level_mark="level0",
               card_mark="allcards", essential_mark="essential")
@@ -180,12 +175,44 @@ class TestMegaMoeFunction(unittest.TestCase):
         DefaultDeviceType.set_device_type("cpu")
         self._check_deferred_backward(permuted=False, replay=True)
 
+    def _check_deferred_forward(
+        self, source: Any, weight1: Any, weight2: Any, route: Any, plan: Any, workspace: Any,
+        down_pointers: list[int],
+        *, permuted: bool, vary_tokens: bool, replay: bool,
+    ) -> Any:
+        """Run one forward and check that its autograd storage survives workspace reuse."""
+        tokens = source.shape[0]
+        if permuted:
+            ids = torch.tensor([[0, 1]] * tokens, dtype=torch.int32)
+            prepared = SimpleNamespace(
+                routed_tokens=source.detach().repeat_interleave(2, dim=0),
+                metadata=route,
+                unpermute_mapping=(torch.arange(tokens * 2, dtype=torch.int32) if vary_tokens
+                                   else torch.tensor([0, 2, 1, 3], dtype=torch.int32)),
+            )
+            output = function_module.execute_mega_moe_with_permutation(
+                source, ids, weight1, weight2, prepared, plan, workspace
+            )
+        elif replay:
+            operation = partial(function_module.execute_mega_moe, route=route, plan=plan, workspace=workspace)
+            output = checkpoint(operation, source, weight1, weight2, use_reentrant=False)
+        else:
+            output = function_module.execute_mega_moe(source, weight1, weight2, route, plan, workspace)
+        if not replay:
+            saved = output.grad_fn.saved_tensors
+            self.assertEqual(len(saved), 13 if permuted and source.requires_grad else 12)
+            self.assertEqual(saved[0].data_ptr(), down_pointers[-1])
+            self.assertNotEqual(saved[0].data_ptr(), workspace.expert_buffer.data_ptr())
+            self.assertEqual(saved[0].untyped_storage().nbytes(), route.expert_capacity * 4 * source.element_size())
+        self.assertEqual(tuple(output.shape), (tokens * 2 if permuted else 4, 4))
+        return output
+
     def _check_deferred_backward(self, *, permuted: bool, input_grad: bool = True,
                                 vary_tokens: bool = False, replay: bool = False) -> None:
         """Exercise delayed backward with an optional input permutation boundary."""
         spec = SimpleNamespace(hidden_size=4, intermediate_size=2, rank_id=0,
                                ep_size=2, num_experts=4, local_num_tokens=2, top_k=2,
-                               dispatch_mode="push", expert_weight_layout="EIO")
+                               dispatch_mode="push", expert_weight_layout="EIO", auto_tokens=False)
         plan = SimpleNamespace(spec=spec, reuse_backward_dispatch=False)
         for name in ("up_proj", "swiglu", "down_proj", "act_grad", "gate_grad",
                      "w1_grad", "w2_grad", "swiglu_grad"):
@@ -285,29 +312,10 @@ class TestMegaMoeFunction(unittest.TestCase):
                 for name in ("dispatch_src_off", "dispatch_target_off", "dispatch_size",
                              "combine_src_off", "combine_target_off", "combine_size"):
                     setattr(route, name, torch.zeros(4, dtype=torch.int64))
-                if permuted:
-                    ids = torch.tensor([[0, 1]] * tokens, dtype=torch.int32)
-                    prepared = SimpleNamespace(
-                        routed_tokens=source.detach().repeat_interleave(2, dim=0),
-                        metadata=route,
-                        unpermute_mapping=(torch.arange(tokens * 2, dtype=torch.int32) if vary_tokens
-                                           else torch.tensor([0, 2, 1, 3], dtype=torch.int32)),
-                    )
-                    output = function_module.execute_mega_moe_with_permutation(
-                        source, ids, weight1, weight2, prepared, plan, workspace
-                    )
-                elif replay:
-                    operation = partial(function_module.execute_mega_moe, route=route, plan=plan, workspace=workspace)
-                    output = checkpoint(operation, source, weight1, weight2, use_reentrant=False)
-                else:
-                    output = function_module.execute_mega_moe(source, weight1, weight2, route, plan, workspace)
-                if not replay:
-                    saved = output.grad_fn.saved_tensors
-                    self.assertEqual(len(saved), 13 if permuted and input_grad else 12)
-                    self.assertEqual(saved[0].data_ptr(), down_pointers[-1])
-                    self.assertNotEqual(saved[0].data_ptr(), workspace.expert_buffer.data_ptr())
-                    self.assertEqual(saved[0].untyped_storage().nbytes(), capacity * 4 * source.element_size())
-                self.assertEqual(tuple(output.shape), (tokens * 2 if permuted else 4, 4))
+                output = self._check_deferred_forward(
+                    source, weight1, weight2, route, plan, workspace, down_pointers,
+                    permuted=permuted, vary_tokens=vary_tokens, replay=replay,
+                )
                 outputs.append(output)
                 sources.append(source)
             for tag in range(len(outputs), 0, -1):

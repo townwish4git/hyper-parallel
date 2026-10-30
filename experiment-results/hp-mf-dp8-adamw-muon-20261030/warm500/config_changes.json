@@ -1,0 +1,110 @@
+{
+  "status": "PASS",
+  "comparison": "500-step planned configs against prior 100-step configs",
+  "cases": {
+    "adamw-mf": {
+      "baseline": "muon/adamw_baseline/mindformers_exp_config.yaml",
+      "changes": [
+        {
+          "path": "callbacks[2].stop_step",
+          "before": 100,
+          "after": 500
+        },
+        {
+          "path": "load_checkpoint",
+          "before": "${EXPERIMENT_ROOT}/anchor",
+          "after": "${EXPERIMENT_ROOT}/warm500/anchor"
+        },
+        {
+          "path": "train_dataset.data_loader.dataset_path",
+          "before": "${EXPERIMENT_ROOT}/data/replay",
+          "after": "${EXPERIMENT_ROOT}/warm500/data/replay"
+        },
+        {
+          "path": "train_dataset_task.dataset_config.data_loader.dataset_path",
+          "before": "${EXPERIMENT_ROOT}/data/replay",
+          "after": "${EXPERIMENT_ROOT}/warm500/data/replay"
+        }
+      ],
+      "model_attention_optimizer_lr_and_precision_unchanged": true
+    },
+    "adamw-hp": {
+      "baseline": "muon/adamw_baseline/hp_exp_config.yaml",
+      "changes": [
+        {
+          "path": "checkpoint.checkpoint_dir",
+          "before": "${EXPERIMENT_ROOT}/hp/checkpoints",
+          "after": "${EXPERIMENT_ROOT}/warm500/adamw/hp/checkpoints"
+        },
+        {
+          "path": "dataset.source_dataset.dataset_path",
+          "before": "${EXPERIMENT_ROOT}/data/replay",
+          "after": "${EXPERIMENT_ROOT}/warm500/data/replay"
+        },
+        {
+          "path": "model.reference_weights",
+          "before": "${EXPERIMENT_ROOT}/anchor",
+          "after": "${EXPERIMENT_ROOT}/warm500/anchor"
+        },
+        {
+          "path": "training.train_iters",
+          "before": 100,
+          "after": 500
+        }
+      ],
+      "model_attention_optimizer_lr_and_precision_unchanged": true
+    },
+    "muon-mf": {
+      "baseline": "muon/mindformers_exp_config.yaml",
+      "changes": [
+        {
+          "path": "callbacks[2].stop_step",
+          "before": 100,
+          "after": 500
+        },
+        {
+          "path": "load_checkpoint",
+          "before": "${EXPERIMENT_ROOT}/anchor",
+          "after": "${EXPERIMENT_ROOT}/warm500/anchor"
+        },
+        {
+          "path": "train_dataset.data_loader.dataset_path",
+          "before": "${EXPERIMENT_ROOT}/data/replay",
+          "after": "${EXPERIMENT_ROOT}/warm500/data/replay"
+        },
+        {
+          "path": "train_dataset_task.dataset_config.data_loader.dataset_path",
+          "before": "${EXPERIMENT_ROOT}/data/replay",
+          "after": "${EXPERIMENT_ROOT}/warm500/data/replay"
+        }
+      ],
+      "model_attention_optimizer_lr_and_precision_unchanged": true
+    },
+    "muon-hp": {
+      "baseline": "muon/hp_exp_config.yaml",
+      "changes": [
+        {
+          "path": "checkpoint.checkpoint_dir",
+          "before": "${EXPERIMENT_ROOT}/hp/checkpoints",
+          "after": "${EXPERIMENT_ROOT}/warm500/muon/hp/checkpoints"
+        },
+        {
+          "path": "dataset.source_dataset.dataset_path",
+          "before": "${EXPERIMENT_ROOT}/data/replay",
+          "after": "${EXPERIMENT_ROOT}/warm500/data/replay"
+        },
+        {
+          "path": "model.reference_weights",
+          "before": "${EXPERIMENT_ROOT}/anchor",
+          "after": "${EXPERIMENT_ROOT}/warm500/anchor"
+        },
+        {
+          "path": "training.train_iters",
+          "before": 100,
+          "after": 500
+        }
+      ],
+      "model_attention_optimizer_lr_and_precision_unchanged": true
+    }
+  }
+}

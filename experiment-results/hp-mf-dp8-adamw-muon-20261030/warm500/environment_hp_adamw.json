@@ -1,0 +1,15 @@
+{
+  "framework": "hp_adamw",
+  "python": "3.12.14",
+  "executable": "${EXPERIMENT_ROOT}/venv/bin/python",
+  "packages": {
+    "torch": "2.12.0+cpu",
+    "torch-npu": "2.12.0",
+    "transformers": "5.13.1",
+    "mindspore": null,
+    "mindformers": null,
+    "numpy": "1.26.4",
+    "datasets": "4.8.5"
+  },
+  "mf_source_sha256": {}
+}

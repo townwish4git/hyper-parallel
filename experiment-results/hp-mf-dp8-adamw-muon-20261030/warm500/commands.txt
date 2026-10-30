@@ -1,0 +1,58 @@
+Host: t129 (ascend129), 8 x Ascend 910B3
+HP AdamW source commit: 8d1e0d513e40ac64dea4b28db898c1f19ef8d906
+HP Muon source commit: 867967f482bff8fe4f11279a9633053301d7900d
+MF source: isolated mindformers-tnd-fixed; existing NS4 Muon variant; MF_CAP=0
+All native commands below were executed in the indicated container.
+MF environment: source /workspace/env.sh
+HP environment: source /workspace/env-850.sh; prepend task venv or venv-muon/bin to PATH
+
+adamw/mf: container=mf-910b-arrow
+2026-10-30 03:56:21,948 - mindformers/workspace/output/log[/workspace/python/lib/python3.12/warnings.py:112] - WARNING - UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
+${EXPERIMENT_ROOT}/mindformers-tnd-fixed/mindformers/__init__.py
+msrun --worker_num=8 --local_worker_num=8 --master_addr=127.0.0.1 --master_port=35982 --join=True --log_dir=${EXPERIMENT_ROOT}/warm500/adamw/mf/formal/msrun python ${EXPERIMENT_ROOT}/mindformers-tnd-fixed/run_mindformer.py --config ${EXPERIMENT_ROOT}/warm500/adamw/mf/formal/config.yaml --register_path ${EXPERIMENT_ROOT}
+No separate communication_env.json captured for the earlier MF AdamW run.
+
+adamw/hp: container=hp-910b-arrow
+${EXPERIMENT_ROOT}/source/hyper_parallel/__init__.py
+python -m torch.distributed.run --nnodes=1 --nproc_per_node=8 --master_addr=127.0.0.1 --master_port=35985 ${EXPERIMENT_ROOT}/run_hp.py --evidence-dir ${EXPERIMENT_ROOT}/warm500/adamw/hp/formal/evidence --mmap-prefix ${EXPERIMENT_ROOT}/warm500/data/wikitext_4k_text_document ${EXPERIMENT_ROOT}/warm500/adamw/hp/formal/config.yaml
+{
+  "HCCL_IF_BASE_PORT": "52100",
+  "HCCL_HOST_SOCKET_PORT_RANGE": "auto",
+  "HCCL_NPU_SOCKET_PORT_RANGE": "auto",
+  "HCCL_DETERMINISTIC": "true",
+  "ASCEND_RT_VISIBLE_DEVICES": "0,1,2,3,4,5,6,7",
+  "ALIGN_MASTER_PORT": "35985"
+}
+
+muon/mf: container=mf-910b-arrow
+2026-10-30 04:55:03,346 - mindformers/workspace/output/log[/workspace/python/lib/python3.12/warnings.py:112] - WARNING - UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
+${EXPERIMENT_ROOT}/mindformers-tnd-fixed/mindformers/__init__.py
+msrun --worker_num=8 --local_worker_num=8 --master_addr=127.0.0.1 --master_port=35986 --join=True --log_dir=${EXPERIMENT_ROOT}/warm500/muon/mf/formal/msrun python ${EXPERIMENT_ROOT}/mindformers-tnd-fixed/run_mindformer.py --config ${EXPERIMENT_ROOT}/warm500/muon/mf/formal/config.yaml --register_path ${EXPERIMENT_ROOT}
+{
+  "HCCL_IF_BASE_PORT": "52200",
+  "HCCL_HOST_SOCKET_PORT_RANGE": "auto",
+  "HCCL_NPU_SOCKET_PORT_RANGE": "auto",
+  "HCCL_DETERMINISTIC": "true",
+  "ASCEND_RT_VISIBLE_DEVICES": "0,1,2,3,4,5,6,7",
+  "ALIGN_MASTER_PORT": "35986"
+}
+
+muon/hp: container=hp-910b-arrow
+${EXPERIMENT_ROOT}/source-muon-867967f4/hyper_parallel/__init__.py
+python -m torch.distributed.run --nnodes=1 --nproc_per_node=8 --master_addr=127.0.0.1 --master_port=35987 ${EXPERIMENT_ROOT}/run_hp.py --evidence-dir ${EXPERIMENT_ROOT}/warm500/muon/hp/formal/evidence --mmap-prefix ${EXPERIMENT_ROOT}/warm500/data/wikitext_4k_text_document ${EXPERIMENT_ROOT}/warm500/muon/hp/formal/config.yaml
+{
+  "HCCL_IF_BASE_PORT": "52300",
+  "HCCL_HOST_SOCKET_PORT_RANGE": "auto",
+  "HCCL_NPU_SOCKET_PORT_RANGE": "auto",
+  "HCCL_DETERMINISTIC": "true",
+  "ASCEND_RT_VISIBLE_DEVICES": "0,1,2,3,4,5,6,7",
+  "ALIGN_MASTER_PORT": "35987"
+}
+
+Suite invocation:
+nohup env SUITE_BASE_PORT=52000 bash ${EXPERIMENT_ROOT}/warm500/run_suite.sh > ${EXPERIMENT_ROOT}/warm500/suite.log 2>&1 </dev/null &
+The resumed suite skipped completed cases; MF AdamW originally ran in the initial suite.
+Postprocessing per optimizer:
+python TASK_ROOT/compare.py --hp TASK_ROOT/warm500/OPT/hp/formal --mf TASK_ROOT/warm500/OPT/mf/formal --output TASK_ROOT/warm500/comparison-OPT --steps 500 --optimizer-label "OPT, MF-trained anchor"
+python TASK_ROOT/warm500/audit_results.py --results TASK_ROOT/warm500
+python TASK_ROOT/warm500/plot_overview.py --results TASK_ROOT/warm500

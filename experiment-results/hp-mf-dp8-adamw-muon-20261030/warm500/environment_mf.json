@@ -1,0 +1,20 @@
+{
+  "framework": "mf",
+  "python": "3.12.12",
+  "executable": "/workspace/python/bin/python",
+  "packages": {
+    "torch": null,
+    "torch-npu": null,
+    "transformers": "4.57.1",
+    "mindspore": "2.7.2",
+    "mindformers": "1.8.0",
+    "numpy": "1.26.4",
+    "datasets": "4.0.0"
+  },
+  "mf_source_sha256": {
+    "mindformers/parallel_core/training_graph/base_models/gpt/gpt_model.py": "a707a17332a958f5e686b64f3803cc2ded0f6d5b0799626f7cc33c9bf48afbdc",
+    "mindformers/parallel_core/training_graph/transformer/multi_latent_attention.py": "6ca80aeec90a72b30e60ba057b3277ef47b63146ca251d6be77b14febc0d1585",
+    "mindformers/core/optim/adamw.py": "a52343d744831b704af3cde8ae804c9eee1d2b8b8f856befb28d1cb9d74cbc95",
+    "mindformers/wrapper/wrapper.py": "6cf89f64caabafd5387f57d6f792274159535ff238c361efe8c14c0656d83f55"
+  }
+}

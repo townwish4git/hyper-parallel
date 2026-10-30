@@ -1,0 +1,32 @@
+{
+  "status": "PASS",
+  "checks_only": "state/input/configuration/completion",
+  "pretraining_step": 148,
+  "runs": {
+    "adamw/mf": {
+      "steps": 500,
+      "ranks": 8,
+      "first_loss": 7.677062034606934,
+      "fresh_optimizer": true
+    },
+    "adamw/hp": {
+      "steps": 500,
+      "ranks": 8,
+      "first_loss": 7.677073955535889,
+      "fresh_optimizer": true
+    },
+    "muon/mf": {
+      "steps": 500,
+      "ranks": 8,
+      "first_loss": 7.677062034606934,
+      "fresh_optimizer": true
+    },
+    "muon/hp": {
+      "steps": 500,
+      "ranks": 8,
+      "first_loss": 7.677073955535889,
+      "fresh_optimizer": true
+    }
+  },
+  "cross_optimizer_inputs_exact": true
+}

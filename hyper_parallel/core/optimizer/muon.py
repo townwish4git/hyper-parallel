@@ -25,6 +25,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 import torch  # pylint: disable=forbidden-backend-import
 import torch.distributed as dist  # pylint: disable=forbidden-backend-import
 
+from hyper_parallel.components.functional.symmetric_matmul import symmetric_matmul
 from hyper_parallel.core.optimizer.optimizer import AsyncReplicateBroadcaster, BaseDistributedOptimizer
 from hyper_parallel.core.optimizer.dtensor_compat import to_local_if_dtensor
 from hyper_parallel.core.optimizer.sharding_category import (
@@ -78,6 +79,7 @@ class MuonPostUpdateContext:
 _MUON_ADVANCED_DEFAULTS: Dict[str, Any] = {
     "ns_coefficients": None,
     "ns_epsilon": 1e-10,
+    "use_symm_gemm": False,
     "zeropower_fn": None,
     "momentum_update_fn": None,
     "reshape_fn": None,
@@ -94,6 +96,7 @@ class _MuonAdvancedOptions:
 
     ns_coefficients: Optional[Sequence[Tuple[float, float, float]]]
     ns_epsilon: float
+    use_symm_gemm: bool
     zeropower_fn: Optional[Callable[..., torch.Tensor]]
     momentum_update_fn: Optional[Callable[..., torch.Tensor]]
     reshape_fn: Optional[Callable[..., Any]]
@@ -122,8 +125,27 @@ def zeropower_via_newtonschulz5(
         ns_variant: str = "asym5",
         epsilon: float = 1e-10,
         ns_coefficients: Optional[Sequence[Tuple[float, float, float]]] = None,
+        use_symm_gemm: bool = False,
 ) -> torch.Tensor:
-    """Newton-Schulz orthogonalization with preallocated matmul buffers."""
+    """Run standard NS with optional static symmetric GEMM dispatch.
+
+    ``use_symm_gemm`` replaces only the two symmetric products. Coefficient
+    operations retain the original dtype and order. Ascend C is selected only
+    for eligible installed NPU kernels; other inputs use native matmul.
+
+    Args:
+        ns_inputs: Matrix or batched matrix to orthogonalize.
+        steps: Number of polynomial iterations.
+        ns_variant: Coefficient family: asym5, legacy or custom.
+        epsilon: Normalization stability term.
+        ns_coefficients: Explicit coefficient groups for the custom variant.
+        use_symm_gemm: Allow static dispatch to Ascend C symmetric products.
+
+    Returns:
+        Orthogonalized update with the input shape and dtype.
+    """
+    if not isinstance(use_symm_gemm, bool):
+        raise ValueError("use_symm_gemm must be a bool")
     mat_x = ns_inputs
     transposed = ns_inputs.size(-2) > ns_inputs.size(-1)
     if transposed:
@@ -155,8 +177,12 @@ def zeropower_via_newtonschulz5(
         )
 
     for coeff_a, coeff_b, coeff_c in step_coeffs:
-        torch.matmul(mat_x, mat_x.mT, out=buf_a)
-        torch.matmul(buf_a, buf_a, out=buf_b)
+        if use_symm_gemm:
+            symmetric_matmul(mat_x, mat_x.mT, out=buf_a)
+            symmetric_matmul(buf_a, buf_a, out=buf_b)
+        else:
+            torch.matmul(mat_x, mat_x.mT, out=buf_a)
+            torch.matmul(buf_a, buf_a, out=buf_b)
         buf_a.mul_(coeff_b)
         buf_b.mul_(coeff_c)
         buf_a.add_(buf_b)
@@ -176,7 +202,16 @@ def compute_muon_slice_scale(
         matched_adamw_rms: float,
         zero_rms_scale_mode: str = "zero",
 ) -> float:
-    """Compute Muon scale from the logical matrix dims of a reshaped slice."""
+    """Compute Muon scale from the logical matrix dims of a reshaped slice.
+
+    Args:
+        slice_tensor: Update tensor whose logical matrix dimensions set the scale.
+        matched_adamw_rms: Target update RMS multiplier.
+        zero_rms_scale_mode: Whether a zero multiplier keeps the learning-rate scale.
+
+    Returns:
+        Scalar multiplier for the update.
+    """
     if not matched_adamw_rms:
         return 1.0 if zero_rms_scale_mode == "use_lr" else 0.0
     shape = tuple(slice_tensor.shape)
@@ -223,6 +258,11 @@ class Muon(BaseDistributedOptimizer):
             ns_variant: Newton-Schulz coefficient variant.
             ns_coefficients: Optional custom Newton-Schulz coefficients.
             ns_epsilon: Numerical stability term used during normalization.
+            use_symm_gemm: Enable static Ascend C/native dispatch for symmetric
+                products in standard NS. Defaults to False. Coefficient rounding,
+                rectangular products and communication remain unchanged. An explicit
+                zeropower_fn overrides this option. For the validated CANN bitwise
+                comparison, set CLOSE_MATMUL_K_SHIFT=1 before process startup.
             zeropower_fn: Optional Newton-Schulz implementation override.
             momentum_update_fn: Optional momentum update implementation override.
             reshape_fn: Optional logical-matrix reshape function.
@@ -233,6 +273,8 @@ class Muon(BaseDistributedOptimizer):
             hsdp_replica_count: Optional optimizer-state replica group size.
         """
         advanced = _resolve_muon_advanced_options(advanced_options)
+        if not isinstance(advanced.use_symm_gemm, bool):
+            raise ValueError("use_symm_gemm must be a bool")
         if ns_variant not in ("legacy", "asym5", "custom"):
             raise ValueError(
                 f"ns_variant must be 'legacy', 'asym5', or 'custom', got {ns_variant!r}"
@@ -261,6 +303,7 @@ class Muon(BaseDistributedOptimizer):
             "ns_variant": ns_variant,
             "ns_coefficients": normalized_coefficients,
             "ns_epsilon": advanced.ns_epsilon,
+            "use_symm_gemm": advanced.use_symm_gemm,
             "zero_rms_scale_mode": advanced.zero_rms_scale_mode,
             "apply_lr_in_update": advanced.apply_lr_in_update,
         }
@@ -322,6 +365,32 @@ class Muon(BaseDistributedOptimizer):
 
     __repr__ = __str__
 
+    def _prepare_step_ns_inputs(self) -> Dict[int, Dict]:
+        """Advance step counters and prepare momentum without communication."""
+        for group in self.param_groups:
+            group['step'] = (group.get('step') or 0) + 1
+
+        # Compute momentum only for no-comm params upfront.
+        no_comm_ns: Dict[int, Dict] = {}
+        for group_idx, group in enumerate(self.param_groups):
+            info = self._hsdp_assignment_batches.get(group_idx)
+            if not info:
+                # No HSDP info — all params are no_comm.
+                unshard_params = self.unshard_params_by_group.get(group_idx, [])
+                no_comm_ns[group_idx] = self._update_muon_momentum(
+                    group, unshard_params
+                )
+            else:
+                no_comm_params = info.get("no_comm", [])
+                if no_comm_params:
+                    no_comm_ns[group_idx] = self._update_muon_momentum(
+                        group, no_comm_params
+                    )
+                else:
+                    no_comm_ns[group_idx] = {}
+
+        return no_comm_ns
+
     @torch.no_grad()
     def step(
             self,
@@ -347,27 +416,7 @@ class Muon(BaseDistributedOptimizer):
 
         num_groups = len(self.param_groups)
 
-        for group in self.param_groups:
-            group['step'] = (group.get('step') or 0) + 1
-
-        # Compute momentum only for no-comm params upfront.
-        no_comm_ns: Dict[int, Dict] = {}
-        for group_idx in range(num_groups):
-            info = self._hsdp_assignment_batches.get(group_idx)
-            if not info:
-                # No HSDP info — all params are no_comm.
-                unshard_params = self.unshard_params_by_group.get(group_idx, [])
-                no_comm_ns[group_idx] = self._update_muon_momentum(
-                    self.param_groups[group_idx], unshard_params
-                )
-            else:
-                no_comm_params = info.get("no_comm", [])
-                if no_comm_params:
-                    no_comm_ns[group_idx] = self._update_muon_momentum(
-                        self.param_groups[group_idx], no_comm_params
-                    )
-                else:
-                    no_comm_ns[group_idx] = {}
+        no_comm_ns = self._prepare_step_ns_inputs()
 
         # Process no-comm params.
         for group_idx in range(num_groups):
@@ -785,7 +834,12 @@ class Muon(BaseDistributedOptimizer):
         _, reshaped_inputs = self._reshape_ns_input(param, working_input)
 
         def restore_view_updates(updates: List[torch.Tensor], output: torch.Tensor) -> None:
-            """Write reshaped NS updates back into the views and the working input."""
+            """Write reshaped NS updates back into the views and the working input.
+
+            Args:
+                updates: Computed updates matching the prepared views.
+                output: Destination for the restored update.
+            """
             for reshaped_input, update in zip(reshaped_inputs, updates):
                 reshaped_input.copy_(update.contiguous().view_as(reshaped_input))
             if output.untyped_storage().data_ptr() != working_input.untyped_storage().data_ptr():
@@ -822,6 +876,7 @@ class Muon(BaseDistributedOptimizer):
             ns_variant: str = "asym5",
             ns_coefficients: Optional[Sequence[Tuple[float, float, float]]] = None,
             ns_epsilon: float = 1e-10,
+            use_symm_gemm: bool = False,
     ) -> List[torch.Tensor]:
         """Run batched NS on mixed-shape tensors and restore their original shapes."""
 
@@ -864,6 +919,7 @@ class Muon(BaseDistributedOptimizer):
                 ns_variant=ns_variant,
                 epsilon=ns_epsilon,
                 ns_coefficients=ns_coefficients,
+                use_symm_gemm=use_symm_gemm,
             )
         else:
             merged_update = self.zeropower_fn(merged_input, steps=ns_steps)
@@ -963,7 +1019,8 @@ class Muon(BaseDistributedOptimizer):
                 )
         for tensor_list in state["reshape_groups"].values():
             updates = self._compute_batched_ns_outputs_for_tensors(
-                tensor_list, group["ns_steps"], group["ns_variant"], group["ns_coefficients"], group["ns_epsilon"]
+                tensor_list, group["ns_steps"], group["ns_variant"], group["ns_coefficients"], group["ns_epsilon"],
+                use_symm_gemm=group.get("use_symm_gemm", False),
             )
             for reshaped_input, update in zip(tensor_list, updates):
                 scale = compute_muon_slice_scale(
@@ -1029,6 +1086,7 @@ class Muon(BaseDistributedOptimizer):
                 ns_variant=group["ns_variant"],
                 ns_coefficients=group["ns_coefficients"],
                 ns_epsilon=group["ns_epsilon"],
+                use_symm_gemm=group.get("use_symm_gemm", False),
             )
 
             # Scale updates.

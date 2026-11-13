@@ -1,0 +1,11 @@
+{
+  "package": "/home/townwish/workspace/projects/hp-symm-wheel-env/lib/python3.10/site-packages/hyper_parallel/__init__.py",
+  "wheel_sha256": "f9b5ea8d040487a4efe3ae6f93f49286b52329276d7a785e13f5e2dc9aa552e2",
+  "native_libraries": {
+    "hyper_parallel/components/functional/_ascendc/symmetric_matmul/libhp_epilogue_kernel.so": "bb6095f3728ba72688afc0878980a5f81971e60e85620ff88e63044b6763ecfe",
+    "hyper_parallel/components/functional/_ascendc/symmetric_matmul/libhp_fused_kernel.so": "953b4e163a0efa3f26f2cfd1dfb0af64d27bb141921f93e75e6617dfb089b9c3",
+    "hyper_parallel/components/functional/_ascendc/symmetric_matmul/libhp_symmetric.so": "36eab7259a4d25a98923ef3262599d43701dee51e6b7eec74d2cbaf61af77277"
+  },
+  "muon_source_matches": true,
+  "contains_gram_algorithm": false
+}

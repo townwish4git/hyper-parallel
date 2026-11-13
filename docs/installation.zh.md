@@ -87,3 +87,13 @@ import importlib.metadata as metadata
 
 print(metadata.version("hyper_parallel"))
 ```
+
+## Ascend 上的 Muon 对称 GEMM
+
+加载完整 CANN 编译工具链后，`pip install -e .` 和 `pip wheel . --no-deps`
+会自动编译对称 GEMM 算子，支持 PEP 517 构建隔离，并查询设备完整 SoC 标识。
+wheel 含原生二进制，部署时需要匹配 CANN/SoC、Python 与 CPU 平台。
+无 CANN 时保留原生 matmul 回退；如 CI 必须产出加速版本，设置 `HP_BUILD_ASCENDC=on`。
+
+`use_symm_gemm=True` 的安装检查、checkpoint 恢复和 `CLOSE_MATMUL_K_SHIFT=1`
+精度对照设置见 [Muon 对称 GEMM 使用指南](guide/muon_symm_gemm.zh.md)。

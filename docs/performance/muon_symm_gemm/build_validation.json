@@ -1,0 +1,61 @@
+{
+  "date": "2026-11-13",
+  "automatic_build": true,
+  "build_isolation": true,
+  "HP_BUILD_ASCENDC": "unset (auto)",
+  "HP_ASCEND_SOC_VERSION": "unset (queried from CANN)",
+  "python": "3.10",
+  "torch": "2.9.0+cpu",
+  "torch_npu": "2.9.0",
+  "cann": "8.5.0",
+  "device": "Ascend910B3",
+  "commands": "installation_commands.txt",
+  "editable": {
+    "host": "t129",
+    "install_exit_code": 0,
+    "smoke": "editable-smoke-final.json"
+  },
+  "wheel_t129": {
+    "host": "t129",
+    "preexisting_source_libraries": 0,
+    "build_exit_code": 0,
+    "install_exit_code": 0,
+    "artifact": {
+      "package": "/home/townwish/workspace/projects/hp-symm-wheel-env/lib/python3.10/site-packages/hyper_parallel/__init__.py",
+      "wheel_sha256": "f9b5ea8d040487a4efe3ae6f93f49286b52329276d7a785e13f5e2dc9aa552e2",
+      "native_libraries": {
+        "hyper_parallel/components/functional/_ascendc/symmetric_matmul/libhp_epilogue_kernel.so": "bb6095f3728ba72688afc0878980a5f81971e60e85620ff88e63044b6763ecfe",
+        "hyper_parallel/components/functional/_ascendc/symmetric_matmul/libhp_fused_kernel.so": "953b4e163a0efa3f26f2cfd1dfb0af64d27bb141921f93e75e6617dfb089b9c3",
+        "hyper_parallel/components/functional/_ascendc/symmetric_matmul/libhp_symmetric.so": "36eab7259a4d25a98923ef3262599d43701dee51e6b7eec74d2cbaf61af77277"
+      },
+      "muon_source_matches": true,
+      "contains_gram_algorithm": false
+    },
+    "runtime_smoke": "Not run on t129; independent wheel runtime verified on t131"
+  },
+  "wheel_t131": {
+    "host": "t131",
+    "device_index": 2,
+    "preexisting_source_libraries": 0,
+    "build_exit_code": 0,
+    "install_exit_code": 0,
+    "smoke_exit_code": 0,
+    "smoke": "wheel-smoke.json",
+    "wheel_sha256": "95abf7ad1627d0ecefe3d19156ed99ff69ff880932fccba5245fbdca676ca241",
+    "native_libraries": {
+      "libhp_symmetric.so": "5374f5b63b68df4d7ce12bc5b85ad7c36ef871bd86144838761d6c0d61ab3418",
+      "libhp_epilogue_kernel.so": "8906d16539d7563ac4f3826e34fb673ebbd553498f8590c018533c4c89056dc9",
+      "libhp_fused_kernel.so": "7aad66c77abd6ed1831d48b1d773d142388e3f799fced0284d671de57cbf145c"
+    },
+    "torch": "2.9.0",
+    "torch_npu": "2.9.0",
+    "installed_python_sources_match": true
+  },
+  "unit_tests": {
+    "host": "t129",
+    "passed": 24,
+    "subtests_passed": 17,
+    "warnings": 6,
+    "log": "ut-final.txt"
+  }
+}

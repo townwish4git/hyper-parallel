@@ -1,0 +1,22 @@
+{
+  "base_master": "02077404bc38c9d8f88fb7dd6423383550d1648f",
+  "t129_pre_run_manifest": {
+    "hyper_parallel/core/optimizer/muon.py": "3ac6d6ef62d77c0cc853944071a408bb1ddecf6b18999047dd595b1d2ee52a19",
+    "hyper_parallel/components/functional/symmetric_matmul.py": "fe9369b4dd93483cba5eaf0a41ba8ea0e5af443c1ffabe43bb6db583f120e3fc",
+    "hyper_parallel/components/functional/_ascendc/symmetric_matmul/libhp_epilogue_kernel.so": "bb6095f3728ba72688afc0878980a5f81971e60e85620ff88e63044b6763ecfe",
+    "hyper_parallel/components/functional/_ascendc/symmetric_matmul/libhp_fused_kernel.so": "953b4e163a0efa3f26f2cfd1dfb0af64d27bb141921f93e75e6617dfb089b9c3",
+    "hyper_parallel/components/functional/_ascendc/symmetric_matmul/libhp_symmetric.so": "36eab7259a4d25a98923ef3262599d43701dee51e6b7eec74d2cbaf61af77277",
+    "hyper_parallel/components/functional/_ascendc/symmetric_matmul/epilogue.h": "ff1085ec7648f6212411064facdc2715480b85f673dba14f8c03e33fb6123442",
+    "hyper_parallel/components/functional/_ascendc/symmetric_matmul/params.h": "565785fd245712d1867026c8c5402b6f03aedd4f540aa7c67e8c81d782cc2439",
+    "hyper_parallel/components/functional/_ascendc/symmetric_matmul/product.h": "6a3c830ea29660f0c24e38f421974e259b4e457a860a10d4fdc470b24cbbac45",
+    "hyper_parallel/components/functional/_ascendc/symmetric_matmul/schedule.h": "43206c06265862a7f16aa1a8ba4cb4a665a225befbee6358d9bf335729728be2",
+    "hyper_parallel/components/functional/_ascendc/symmetric_matmul/epilogue.cpp": "7cf8de3632cfe16b7d6dabe5cf0eeba1b317a8741be32a06ca1a8ba104b62157",
+    "hyper_parallel/components/functional/_ascendc/symmetric_matmul/fused.cpp": "b0d9aa18a0052488e038254878f69d7b75e2007169fdee368b79da36967ef438",
+    "hyper_parallel/components/functional/_ascendc/symmetric_matmul/plan.cpp": "9dcf8885dd514691447ba3d78411b7cec27ec4829655df8be8cf7d7ba8f3be14",
+    "hyper_parallel/components/functional/_ascendc/symmetric_matmul/launch.py": "4850b42571823d3e992a06cfc1932f5eb91616a9f766d49b000375a1fdcecd86",
+    "tests/torch/optimizer/benchmark_muon_models.py": "a4f4873c0304072568ad7d27e7781f7cc973b48726d982b8244ed98b3e3a8b30",
+    "tests/torch/optimizer/muon_model_inputs.py": "2e2b7e9b7ea08068ff176044a46f0b221b336ffa594c5808aca8a307b317d721",
+    "tests/torch/optimizer/muon_step_metrics.py": "6979fb44a668ab5e464fd6152ed84323697a39d9e4d3a97526ec181f1acfc876"
+  },
+  "local_sources_match_pre_run_manifest": true
+}

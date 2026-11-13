@@ -1,0 +1,38 @@
+Recorded validation commands (2026-11-13)
+
+Common conditions: Python 3.10; torch 2.9.0+cpu; torch_npu 2.9.0;
+CANN 8.5.0; Ascend910B3. HP_BUILD_ASCENDC and HP_ASCEND_SOC_VERSION unset.
+pip's default PEP 517 build isolation enabled; --no-deps preserves installed Torch.
+Source trees initially contain no native .so files. No manual CMake invocation.
+
+1. Editable build and runtime, t129:
+source /home/cann_custom_path/8.5.0/cann-8.5.0/set_env.sh
+cd /home/townwish/workspace/projects/hp-symm-only-20261113
+python=/home/townwish/workspace/projects/hp-symm-only-env/bin/python
+"$python" -m pip install -e . --no-deps
+# Targeted UT, editable smoke and full-model benchmarks: run_t129.sh.
+
+2. Independent clean-source wheel build/install, t129:
+cd /home/townwish/workspace/projects/hp-symm-wheel-src-20261113
+"$python" -m pip wheel . --no-deps -v -w /home/townwish/workspace/projects/hp-symm-only-20261113/validation/wheels-final
+/home/townwish/workspace/projects/hp-symm-wheel-env/bin/python -m pip install --force-reinstall --no-deps /home/townwish/workspace/projects/hp-symm-only-20261113/validation/wheels-final/*.whl
+cd /tmp
+/home/townwish/workspace/projects/hp-symm-wheel-env/bin/python -c 'import hyper_parallel; print(hyper_parallel.__file__)'
+
+3. Additional independent clean-source wheel build/install/runtime, t131:
+# Load the vendor environment before enabling shell nounset (set -u).
+source /usr/local/Ascend/cann-8.5.0/set_env.sh
+export ASCEND_RT_VISIBLE_DEVICES=2 CLOSE_MATMUL_K_SHIFT=1 OMP_NUM_THREADS=1
+cd /home/townwish/workspace/projects/hp-symm-wheel-only-20261113
+python=/home/townwish/workspace/projects/hp-symm-wheel-only-env/bin/python
+find hyper_parallel/components/functional/_ascendc -name '*.so'
+"$python" -m pip wheel . --no-deps -v -w validation/wheels
+"$python" -m pip install --force-reinstall --no-deps validation/wheels/*.whl
+cd /tmp
+"$python" /home/townwish/workspace/projects/hp-symm-wheel-only-20261113/tests/torch/functional/symmetric_matmul_smoke.py --expected-root /home/townwish/workspace/projects/hp-symm-wheel-only-env/lib/python3.10/site-packages --output /home/townwish/workspace/projects/hp-symm-wheel-only-20261113/validation/wheel-smoke.json
+
+4. Resume interrupted 27B five-step precision, t129 after host reboot:
+source /home/cann_custom_path/8.5.0/cann-8.5.0/set_env.sh
+cd /home/townwish/workspace/projects/hp-symm-only-20261113
+export CLOSE_MATMUL_K_SHIFT=1 OMP_NUM_THREADS=1 ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+/home/townwish/workspace/projects/hp-symm-only-env/bin/python -m torch.distributed.run --standalone --nproc-per-node=8 -m tests.torch.optimizer.benchmark_muon_models --model qwen3.5-27b --cycles 0 --accuracy-steps 5 --metric-threads 16 --output validation/qwen3.5-27b-five-step.json

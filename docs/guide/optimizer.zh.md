@@ -193,3 +193,14 @@ and [VLM example](../../examples/training_demo/deepseek_v41/train_deepseek_v41_v
 for nested callback configuration and Engram parameter groups. The examples
 configure optimizer hyperparameters; they do not reproduce the report's full
 training schedule. Resume with the same optimizer partition and head layout.
+
+## Muon 可选 Ascend C 对称 GEMM
+
+设置 `Muon(parameters, use_symm_gemm=True)`，即可对标准 NS 中的两次对称乘法
+启用静态 Ascend C 选路；默认关闭。混合优化器的 Muon 配置支持
+`muon_use_symm_gemm: true`。系数舍入顺序、矩形乘法、动量和通信保持不变。
+
+加载 CANN 编译工具链后，`pip install -e .` 和 wheel 构建会自动编译算子。
+如需复现实测中与原生 CANN 的逐 bit 对齐结果，应在启动所有 worker 前设置
+`CLOSE_MATMUL_K_SHIFT=1`。安装、训练开关、checkpoint 恢复和验证范围见
+[完整使用指南](muon_symm_gemm.zh.md)。

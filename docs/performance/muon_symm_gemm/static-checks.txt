@@ -1,0 +1,17 @@
+Running lint checks...
+✅ All checks passed (with warnings)
+
+[pylint-plugin-tests]
+..
+----------------------------------------------------------------------
+Ran 2 tests in 1.658s
+
+OK
+
+[test_coverage] (advisory, non-blocking)
+  hyper_parallel/components/functional/_ascendc/symmetric_matmul/launch.py: no test file found (expected tests/torch/components/functional/_ascendc/symmetric_matmul/test_launch.py or tests/torch/components/functional/_ascendc/symmetric_matmul/_test_launch.py)
+  hyper_parallel/components/functional/symmetric_matmul.py: no test file found (expected tests/torch/components/functional/test_symmetric_matmul.py or tests/torch/components/functional/_test_symmetric_matmul.py)
+  hyper_parallel/core/optimizer/muon.py: no test file found (expected tests/torch/optimizer/test_muon.py or tests/torch/optimizer/_test_muon.py)
+
+[agents-catalog] AGENTS catalog OK (10 skills, 13 agents)
+

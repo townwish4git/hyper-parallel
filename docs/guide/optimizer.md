@@ -193,3 +193,16 @@ and [VLM example](../../examples/training_demo/deepseek_v41/train_deepseek_v41_v
 for nested callback configuration and Engram parameter groups. The examples
 configure optimizer hyperparameters; they do not reproduce the report's full
 training schedule. Resume with the same optimizer partition and head layout.
+
+## Optional Ascend C symmetric GEMM for Muon
+
+Set `Muon(parameters, use_symm_gemm=True)` to enable static Ascend C dispatch for
+the two symmetric products in standard NS. The default is false. The mixed
+optimizer accepts `muon_use_symm_gemm: true` in its Muon configuration. Coefficient
+rounding, rectangular products, momentum and communication remain unchanged.
+
+Install with the CANN compiler toolkit loaded; `pip install -e .` and wheel
+builds compile the native operator automatically. For the validated bitwise
+comparison with native CANN, export `CLOSE_MATMUL_K_SHIFT=1` before starting all
+workers. See the [installation, training and resume guide](muon_symm_gemm.md)
+for the complete deployment steps and measured support boundary.

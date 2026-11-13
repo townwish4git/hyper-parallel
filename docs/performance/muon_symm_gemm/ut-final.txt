@@ -1,0 +1,36 @@
+/home/miniconda3/envs/twx_pt29/lib/python3.10/site-packages/torch_npu/utils/collect_env.py:58: UserWarning: Warning: The /home/cann_custom_path/8.5.0/cann-8.5.0 owner does not match the current owner.
+  warnings.warn(f"Warning: The {path} owner does not match the current owner.")
+/home/miniconda3/envs/twx_pt29/lib/python3.10/site-packages/torch_npu/utils/collect_env.py:58: UserWarning: Warning: The /home/cann_custom_path/8.5.0/cann-8.5.0/aarch64-linux/ascend_ops_install.info owner does not match the current owner.
+  warnings.warn(f"Warning: The {path} owner does not match the current owner.")
+/home/miniconda3/envs/twx_pt29/lib/python3.10/site-packages/torch_npu/utils/collect_env.py:58: UserWarning: Warning: The /home/cann_custom_path/8.5.0/cann-8.5.0 owner does not match the current owner.
+  warnings.warn(f"Warning: The {path} owner does not match the current owner.")
+/home/miniconda3/envs/twx_pt29/lib/python3.10/site-packages/torch_npu/utils/collect_env.py:58: UserWarning: Warning: The /home/cann_custom_path/8.5.0/cann-8.5.0/aarch64-linux/ascend_ops_install.info owner does not match the current owner.
+  warnings.warn(f"Warning: The {path} owner does not match the current owner.")
+........................                                [100%]
+=============================== warnings summary ===============================
+tests/common/mark_utils.py:38
+  /home/townwish/workspace/projects/hp-symm-only-20261113/tests/common/mark_utils.py:38: PytestUnknownMarkWarning: Unknown pytest.mark.cpu_linux - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+    func = getattr(pytest.mark, plat_mark)(func)
+
+tests/common/mark_utils.py:38
+  /home/townwish/workspace/projects/hp-symm-only-20261113/tests/common/mark_utils.py:38: PytestUnknownMarkWarning: Unknown pytest.mark.cpu_macos - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+    func = getattr(pytest.mark, plat_mark)(func)
+
+tests/common/mark_utils.py:38
+  /home/townwish/workspace/projects/hp-symm-only-20261113/tests/common/mark_utils.py:38: PytestUnknownMarkWarning: Unknown pytest.mark.cpu_windows - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+    func = getattr(pytest.mark, plat_mark)(func)
+
+tests/common/mark_utils.py:39
+  /home/townwish/workspace/projects/hp-symm-only-20261113/tests/common/mark_utils.py:39: PytestUnknownMarkWarning: Unknown pytest.mark.level0 - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+    func = getattr(pytest.mark, level_mark)(func)
+
+tests/common/mark_utils.py:40
+  /home/townwish/workspace/projects/hp-symm-only-20261113/tests/common/mark_utils.py:40: PytestUnknownMarkWarning: Unknown pytest.mark.dryrun - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+    func = getattr(pytest.mark, card_mark)(func)
+
+tests/common/mark_utils.py:41
+  /home/townwish/workspace/projects/hp-symm-only-20261113/tests/common/mark_utils.py:41: PytestUnknownMarkWarning: Unknown pytest.mark.essential - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+    func = getattr(pytest.mark, essential_mark)(func)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+24 passed, 6 warnings, 17 subtests passed in 0.32s

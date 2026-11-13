@@ -1,0 +1,42 @@
+{
+  "package": "/home/townwish/workspace/projects/hp-symm-only-20261113/hyper_parallel/__init__.py",
+  "device": "Ascend910B3",
+  "products": [
+    {
+      "shape": [
+        257,
+        513
+      ],
+      "ascendc_selected": false,
+      "relative_l2": 0.0
+    },
+    {
+      "shape": [
+        2,
+        1024,
+        4096
+      ],
+      "ascendc_selected": false,
+      "relative_l2": 0.0
+    },
+    {
+      "shape": [
+        32,
+        768,
+        768
+      ],
+      "ascendc_selected": true,
+      "relative_l2": 0.0
+    }
+  ],
+  "muon": {
+    "shape": [
+      32,
+      768,
+      2048
+    ],
+    "different_bit_patterns": 0,
+    "optimizer_steps": 5,
+    "step_and_state_restore": true
+  }
+}

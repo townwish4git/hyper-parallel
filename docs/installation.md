@@ -78,3 +78,16 @@ import importlib.metadata as metadata
 
 print(metadata.version("hyper_parallel"))
 ```
+
+## Muon symmetric GEMM on Ascend
+
+With a complete CANN compiler toolkit loaded, `pip install -e .` and
+`pip wheel . --no-deps` automatically compile the bundled symmetric GEMM operator.
+The build supports PEP 517 isolation and detects the device's full SoC identifier.
+A wheel contains native binaries and must match the deployment CANN/SoC and
+Python/platform environment. On hosts without CANN, native matmul remains
+available; set `HP_BUILD_ASCENDC=on` when CI must require an accelerated build.
+
+For `use_symm_gemm=True`, installation checks, checkpoint resume, and the
+`CLOSE_MATMUL_K_SHIFT=1` precision-comparison setup, follow the
+[Muon symmetric GEMM guide](guide/muon_symm_gemm.md).

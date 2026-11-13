@@ -1,0 +1,23 @@
+{
+  "hyper_parallel/components/functional/_ascendc/__init__.py": "804219cd67816006e2694ac925ba23d42913bae1c50b3acd3d7b20ece5802e14",
+  "hyper_parallel/components/functional/_ascendc/symmetric_matmul/CMakeLists.txt": "d4ef83bf26d36eab3aa223a552fb88ea5fc1f2d24f3b3aba9cf3560141f86872",
+  "hyper_parallel/components/functional/_ascendc/symmetric_matmul/CPPLINT.cfg": "7387a0043fd8ac12034622df8e384dc2c47e34d7f6086fe77935a80c1396674a",
+  "hyper_parallel/components/functional/_ascendc/symmetric_matmul/__init__.py": "804219cd67816006e2694ac925ba23d42913bae1c50b3acd3d7b20ece5802e14",
+  "hyper_parallel/components/functional/_ascendc/symmetric_matmul/epilogue.cpp": "7cf8de3632cfe16b7d6dabe5cf0eeba1b317a8741be32a06ca1a8ba104b62157",
+  "hyper_parallel/components/functional/_ascendc/symmetric_matmul/epilogue.h": "ff1085ec7648f6212411064facdc2715480b85f673dba14f8c03e33fb6123442",
+  "hyper_parallel/components/functional/_ascendc/symmetric_matmul/fused.cpp": "b0d9aa18a0052488e038254878f69d7b75e2007169fdee368b79da36967ef438",
+  "hyper_parallel/components/functional/_ascendc/symmetric_matmul/launch.py": "4850b42571823d3e992a06cfc1932f5eb91616a9f766d49b000375a1fdcecd86",
+  "hyper_parallel/components/functional/_ascendc/symmetric_matmul/params.h": "565785fd245712d1867026c8c5402b6f03aedd4f540aa7c67e8c81d782cc2439",
+  "hyper_parallel/components/functional/_ascendc/symmetric_matmul/plan.cpp": "9dcf8885dd514691447ba3d78411b7cec27ec4829655df8be8cf7d7ba8f3be14",
+  "hyper_parallel/components/functional/_ascendc/symmetric_matmul/product.h": "6a3c830ea29660f0c24e38f421974e259b4e457a860a10d4fdc470b24cbbac45",
+  "hyper_parallel/components/functional/_ascendc/symmetric_matmul/schedule.h": "43206c06265862a7f16aa1a8ba4cb4a665a225befbee6358d9bf335729728be2",
+  "hyper_parallel/components/functional/symmetric_matmul.py": "fe9369b4dd93483cba5eaf0a41ba8ea0e5af443c1ffabe43bb6db583f120e3fc",
+  "pyproject.toml": "dd2e3d99fb8ee5757eabfdec32d5b1245d5094bc65b2115ab4948fcd3390a927",
+  "setup_ascendc.py": "3c39b2ea5843c10f32859be8928fa92211cb53f31849c9fe3f1c115e3fd7d3cb",
+  "tests/torch/optimizer/benchmark_muon_models.py": "a4f4873c0304072568ad7d27e7781f7cc973b48726d982b8244ed98b3e3a8b30",
+  "tests/torch/optimizer/muon_model_inputs.py": "2e2b7e9b7ea08068ff176044a46f0b221b336ffa594c5808aca8a307b317d721",
+  "tests/torch/optimizer/muon_step_metrics.py": "6979fb44a668ab5e464fd6152ed84323697a39d9e4d3a97526ec181f1acfc876",
+  "MANIFEST.in": "9f34e428d348dd207be0cc94d9f285f72cd1112077d81481b4ab050517a8517c",
+  "hyper_parallel/core/optimizer/muon.py": "3ac6d6ef62d77c0cc853944071a408bb1ddecf6b18999047dd595b1d2ee52a19",
+  "setup.py": "c0eabc5c806f4c495af6aeba48d98b9ce0c5bd097164f252967a4631fc88db04"
+}

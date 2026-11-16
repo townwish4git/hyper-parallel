@@ -56,6 +56,22 @@ __aicore__ inline void finish_epilogue_tile(int iteration) {
   if constexpr (Fused) CrossCoreSetFlag<0x2, PIPE_MTE3>(8 + iteration % 2);
 }
 
+template <class T>
+__aicore__ inline void combine_epilogue(LocalTensor<float> &value, LocalTensor<float> &additive,
+                                        LocalTensor<T> &rounded, const SymmetricPlan &plan, float alpha, float beta) {
+  constexpr int elements = 64 * 64;
+  if (alpha != 0 && plan.k != 0) Muls(value, value, alpha, elements);
+  if (beta != 0) {
+    Cast(additive, rounded, RoundMode::CAST_NONE, elements);
+    PipeBarrier<PIPE_V>();
+    Muls(additive, additive, beta, elements);
+    PipeBarrier<PIPE_V>();
+    Add(value, value, additive, elements);
+  }
+  PipeBarrier<PIPE_V>();
+  Cast(rounded, value, RoundMode::CAST_RINT, elements);
+}
+
 template <class T, bool Fused = false>
 __aicore__ inline void epilogue(GM_ADDR scratch, GM_ADDR c, GM_ADDR out, SymmetricPlan &plan, float alpha, float beta) {
   TPipe pipe;
@@ -96,22 +112,15 @@ __aicore__ inline void epilogue(GM_ADDR scratch, GM_ADDR c, GM_ADDR out, Symmetr
         } else {
           if (alpha != 0 && plan.k != 0) {
             DataCopy(v, src[lower], {tile, tile * 4 / 32, static_cast<uint16_t>((plan.n - tile) * 4 / 32), 0});
-            PipeBarrier<PIPE_ALL>();
-            Muls(v, v, alpha, tile * tile);
           } else {
             Duplicate(v, 0.0f, tile * tile);
           }
           if (beta != 0) {
             DataCopy(r, cg[lower], {tile, tile * 2 / 32, static_cast<uint16_t>((plan.n - tile) * 2 / 32), 0});
-            PipeBarrier<PIPE_ALL>();
-            Cast(add, r, RoundMode::CAST_NONE, tile * tile);
-            PipeBarrier<PIPE_V>();
-            Muls(add, add, beta, tile * tile);
-            PipeBarrier<PIPE_V>();
-            Add(v, v, add, tile * tile);
           }
-          PipeBarrier<PIPE_V>();
-          Cast(r, v, RoundMode::CAST_RINT, tile * tile);
+          // Both independent loads can complete behind a single dependency barrier.
+          PipeBarrier<PIPE_ALL>();
+          combine_epilogue(v, add, r, plan, alpha, beta);
         }
         PipeBarrier<PIPE_ALL>();
         transpose_tile(r, tr);

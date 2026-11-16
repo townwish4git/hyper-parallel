@@ -193,10 +193,43 @@ def _write(report, output):
         Path(output).write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
 
 
+def _fingerprints(parameters, names, args):
+    optimizer = _reset(parameters, args.seed, "epilogue")
+    results = []
+    for step in range(max(args.fingerprint_steps)):
+        initialize_gradients(parameters, args.seed, step)
+        optimizer.step()
+        if step + 1 not in args.fingerprint_steps:
+            continue
+        torch.npu.synchronize()
+        hashes = {key: hashlib.sha256() for key in ("parameters", "momentum")}
+        counts = dict.fromkeys(hashes, 0)
+        for parameter, name in zip(parameters, names):
+            tensors = {"parameters": parameter, "momentum": optimizer.state[parameter].get("momentum_buffer")}
+            for key, tensor in tensors.items():
+                hashes[key].update(name.encode("utf-8") + b"\0")
+                if tensor is None:
+                    hashes[key].update(b"absent\0")
+                    continue
+                value = to_local_if_dtensor(tensor).detach().cpu().contiguous()
+                hashes[key].update(str((value.shape, value.dtype)).encode("utf-8") + b"\0")
+                hashes[key].update(memoryview(value.view(torch.uint8).numpy()))
+                counts[key] += value.numel()
+        local = {"rank": dist.get_rank(), "elements": counts,
+                 "sha256": {key: value.hexdigest() for key, value in hashes.items()}}
+        ranks = [None] * dist.get_world_size()
+        dist.all_gather_object(ranks, local)
+        results.append({"steps": step + 1, "mode": "epilogue", "ranks": ranks})
+    del optimizer
+    _release()
+    return results
+
+
 def _source_hashes():
     root = Path(hyper_parallel.__file__).parent
     names = ("core/optimizer/muon.py", "components/functional/symmetric_matmul.py",
              "components/functional/_ascendc/symmetric_matmul/launch.py",
+             "components/functional/_ascendc/symmetric_matmul/epilogue.h",
              "components/functional/_ascendc/symmetric_matmul/libhp_symmetric.so",
              "components/functional/_ascendc/symmetric_matmul/libhp_fused_kernel.so",
              "components/functional/_ascendc/symmetric_matmul/libhp_epilogue_kernel.so")
@@ -216,12 +249,16 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=51430)
     parser.add_argument("--include-epilogue", action="store_true", help="Also measure the FP32 polynomial epilogue")
     parser.add_argument("--accuracy-steps", nargs="*", type=int, default=[1, 5])
+    parser.add_argument("--fingerprint-steps", nargs="*", type=int, default=[],
+                        help="Hash all epilogue parameters and momentum at these steps for cross-build comparison")
     parser.add_argument("--metric-threads", type=int, default=1,
                         help="CPU threads only for precision statistics; "
                              "optimizer execution keeps its original setting")
     args = parser.parse_args()
     if args.metric_threads < 1:
         raise ValueError("--metric-threads must be positive")
+    if args.fingerprint_steps and (not args.include_epilogue or min(args.fingerprint_steps) < 1):
+        raise ValueError("--fingerprint-steps requires --include-epilogue and positive checkpoints")
     if os.environ.get("CLOSE_MATMUL_K_SHIFT") != "1":
         raise ValueError("The precision comparison requires CLOSE_MATMUL_K_SHIFT=1 before process startup")
     modes = [False, True, "epilogue"] if args.include_epilogue else [False, True]
@@ -256,6 +293,9 @@ def main() -> None:
     for steps in args.accuracy_steps:
         rows = _accuracy(parameters, names, args, steps)
         report["precision"].extend(rows)
+        _write(report, args.output)
+    if args.fingerprint_steps:
+        report["fingerprints"] = _fingerprints(parameters, names, args)
         _write(report, args.output)
     del model
     dist.destroy_process_group()

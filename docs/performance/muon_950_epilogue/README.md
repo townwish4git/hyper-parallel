@@ -162,7 +162,7 @@ dense 的对称计算本身已有收益，这次 UB 优化是在原收益上继�
 
 它们不含 Muon 的动量和参数更新；前面的本地 step 表包含这些操作。
 [原版 NS 时序](baseline-ns-timings.json)、[UB NS 时序](ub-ns-timings.json)、
-[逐算子 profiler 汇总](ns-profile-summary.json)，原始 kernel CSV 同目录。
+[逐算子 profiler 汇总](ns-profile-summary.json)，原始 kernel CSV 同目录（仅将 CRLF 换行规范化为 LF，数值保持原样）。
 Profiler 在无 schedule 的两次调用采集结束时报告 schedule 警告；已核对导出的两次 NS
 各类 kernel 数与调用结构一致。时序结论使用 profiler 外的独立测量。
 

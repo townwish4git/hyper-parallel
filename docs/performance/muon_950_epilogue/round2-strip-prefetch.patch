@@ -11,7 +11,7 @@ index c3657284..246a8a6b 100644
      cg.SetGlobalBuffer(reinterpret_cast<__gm__ T *>(c));
      dst.SetGlobalBuffer(reinterpret_cast<__gm__ T *>(out));
    }
- 
+
 +  __aicore__ void prefetch(const TaskRegion &region, int stage) {
 +    if (beta_ == 0) return;
 +    int row = region.row + stage * 128 + GetSubBlockIdx() * tile;
@@ -32,7 +32,7 @@ index c3657284..246a8a6b 100644
 +  TBuf<TPosition::VECCALC> values, additive, rounded, transposed, selection, prefetched;
    GlobalTensor<T> cg, dst;
  };
- 
+
 @@ -132,6 +142,7 @@ __aicore__ inline void epilogue_onchip(GM_ADDR c, GM_ADDR out, SymmetricPlan &pl
    for (int task = GetBlockIdx() / 2; task < task_count<true>(plan); task += plan.cores) {
      auto region = task_region<true>(plan, task);

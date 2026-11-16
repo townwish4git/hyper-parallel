@@ -1,0 +1,62 @@
+{
+  "forward": {
+    "expert": {
+      "output_hash_equal": true,
+      "samples_us": {
+        "baseline": 154.50449585914612,
+        "prototype": 148.6495018005371,
+        "reduction_percent": 3.7895298942929867
+      }
+    },
+    "dense": {
+      "output_hash_equal": true,
+      "samples_us": {
+        "baseline": 761.3245010375977,
+        "prototype": 756.4509868621826,
+        "reduction_percent": 0.640136258425017
+      }
+    }
+  },
+  "reverse": {
+    "expert": {
+      "output_hash_equal": true,
+      "samples_us": {
+        "baseline": 153.69099974632263,
+        "prototype": 150.18200278282166,
+        "reduction_percent": 2.283150587407734
+      },
+      "wall_samples_us": {
+        "baseline": 159.55674898577854,
+        "prototype": 793.9855000586249,
+        "reduction_percent": -397.6195022182319
+      }
+    },
+    "dense": {
+      "output_hash_equal": true,
+      "samples_us": {
+        "baseline": 756.7300081253052,
+        "prototype": 739.9874925613403,
+        "reduction_percent": 2.212482045669384
+      },
+      "wall_samples_us": {
+        "baseline": 763.0539999809116,
+        "prototype": 1150.721750309458,
+        "reduction_percent": -50.804759602628934
+      }
+    }
+  },
+  "prototype_profile": {
+    "dense": {
+      "direct_bf16": 654.5566,
+      "scratch_identity": 756.0852,
+      "scratch_polynomial": 757.3132,
+      "scratch_scale": 750.68
+    },
+    "expert": {
+      "direct_bf16": 112.682,
+      "scratch_identity": 128.46020000000001,
+      "scratch_polynomial": 144.8716,
+      "scratch_scale": 129.345
+    }
+  }
+}

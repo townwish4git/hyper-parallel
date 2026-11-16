@@ -1,0 +1,22 @@
+--- a/epilogue.h
++++ b/epilogue.h
+@@ -96,14 +96,16 @@
+         } else {
+           if (alpha != 0 && plan.k != 0) {
+             DataCopy(v, src[lower], {tile, tile * 4 / 32, static_cast<uint16_t>((plan.n - tile) * 4 / 32), 0});
+-            PipeBarrier<PIPE_ALL>();
+-            Muls(v, v, alpha, tile * tile);
+           } else {
+             Duplicate(v, 0.0f, tile * tile);
+           }
+           if (beta != 0) {
+             DataCopy(r, cg[lower], {tile, tile * 2 / 32, static_cast<uint16_t>((plan.n - tile) * 2 / 32), 0});
+-            PipeBarrier<PIPE_ALL>();
++          }
++          // Both independent loads can complete behind a single dependency barrier.
++          PipeBarrier<PIPE_ALL>();
++          if (alpha != 0 && plan.k != 0) Muls(v, v, alpha, tile * tile);
++          if (beta != 0) {
+             Cast(add, r, RoundMode::CAST_NONE, tile * tile);
+             PipeBarrier<PIPE_V>();
+             Muls(add, add, beta, tile * tile);

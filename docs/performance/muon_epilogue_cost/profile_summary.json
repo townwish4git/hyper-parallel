@@ -1,0 +1,81 @@
+{
+  "kernel_count_per_trace": 5,
+  "cases": {
+    "dense": {
+      "direct_bf16": {
+        "Duration(us)": 700.3082,
+        "aic_mac_time(us)": 492.5812,
+        "aic_mte2_time(us)": 564.2762,
+        "aic_fixpipe_time(us)": 10.369,
+        "aiv_vec_time(us)": 10.606,
+        "aiv_mte2_time(us)": 27.744,
+        "aiv_mte3_time(us)": 26.1762
+      },
+      "scratch_identity": {
+        "Duration(us)": 752.2918,
+        "aic_mac_time(us)": 492.4672,
+        "aic_mte2_time(us)": 603.9522,
+        "aic_fixpipe_time(us)": 18.6214,
+        "aiv_vec_time(us)": 19.921,
+        "aiv_mte2_time(us)": 30.3568,
+        "aiv_mte3_time(us)": 46.1062
+      },
+      "scratch_polynomial": {
+        "Duration(us)": 765.1744,
+        "aic_mac_time(us)": 492.4716,
+        "aic_mte2_time(us)": 611.5294,
+        "aic_fixpipe_time(us)": 18.4678,
+        "aiv_vec_time(us)": 35.626,
+        "aiv_mte2_time(us)": 60.3684,
+        "aiv_mte3_time(us)": 44.986000000000004
+      },
+      "scratch_scale": {
+        "Duration(us)": 753.8364,
+        "aic_mac_time(us)": 492.4712,
+        "aic_mte2_time(us)": 602.7426,
+        "aic_fixpipe_time(us)": 18.6874,
+        "aiv_vec_time(us)": 19.921,
+        "aiv_mte2_time(us)": 30.0094,
+        "aiv_mte3_time(us)": 45.631
+      }
+    },
+    "expert": {
+      "direct_bf16": {
+        "Duration(us)": 112.406,
+        "aic_mac_time(us)": 66.2094,
+        "aic_mte2_time(us)": 60.5488,
+        "aic_fixpipe_time(us)": 10.2144,
+        "aiv_vec_time(us)": 8.775,
+        "aiv_mte2_time(us)": 16.223399999999998,
+        "aiv_mte3_time(us)": 18.6248
+      },
+      "scratch_identity": {
+        "Duration(us)": 132.4532,
+        "aic_mac_time(us)": 66.296,
+        "aic_mte2_time(us)": 69.718,
+        "aic_fixpipe_time(us)": 19.3616,
+        "aiv_vec_time(us)": 15.951,
+        "aiv_mte2_time(us)": 19.057,
+        "aiv_mte3_time(us)": 36.227000000000004
+      },
+      "scratch_polynomial": {
+        "Duration(us)": 152.1084,
+        "aic_mac_time(us)": 66.29520000000001,
+        "aic_mte2_time(us)": 72.7858,
+        "aic_fixpipe_time(us)": 19.527,
+        "aiv_vec_time(us)": 28.049,
+        "aiv_mte2_time(us)": 36.4484,
+        "aiv_mte3_time(us)": 33.0266
+      },
+      "scratch_scale": {
+        "Duration(us)": 132.4052,
+        "aic_mac_time(us)": 66.2856,
+        "aic_mte2_time(us)": 69.2124,
+        "aic_fixpipe_time(us)": 19.434,
+        "aiv_vec_time(us)": 15.951,
+        "aiv_mte2_time(us)": 18.949,
+        "aiv_mte3_time(us)": 36.29
+      }
+    }
+  }
+}

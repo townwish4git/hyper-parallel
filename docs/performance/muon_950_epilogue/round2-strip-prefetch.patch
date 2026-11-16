@@ -1,0 +1,43 @@
+diff --git a/hyper_parallel/components/functional/_ascendc/symmetric_matmul/onchip.h b/hyper_parallel/components/functional/_ascendc/symmetric_matmul/onchip.h
+index c3657284..246a8a6b 100644
+--- a/hyper_parallel/components/functional/_ascendc/symmetric_matmul/onchip.h
++++ b/hyper_parallel/components/functional/_ascendc/symmetric_matmul/onchip.h
+@@ -80,11 +80,21 @@ class OnchipConsumer {
+     pipe.InitBuffer(rounded, tile * tile * sizeof(T));
+     pipe.InitBuffer(transposed, tile * tile * sizeof(T));
+     pipe.InitBuffer(selection, tile * tile / 8);
++    pipe.InitBuffer(prefetched, tile * 256 * sizeof(T));
+     initialize_diagonal_mask(selection);
+     cg.SetGlobalBuffer(reinterpret_cast<__gm__ T *>(c));
+     dst.SetGlobalBuffer(reinterpret_cast<__gm__ T *>(out));
+   }
+ 
++  __aicore__ void prefetch(const TaskRegion &region, int stage) {
++    if (beta_ == 0) return;
++    int row = region.row + stage * 128 + GetSubBlockIdx() * tile;
++    int64_t offset = static_cast<int64_t>(region.batch) * plan_.n * plan_.n + row * plan_.n + region.col;
++    DataCopy(prefetched.Get<T>(), cg[offset],
++             {tile, 256 * sizeof(T) / 32, static_cast<uint16_t>((plan_.n - 256) * sizeof(T) / 32), 0});
++    PipeBarrier<PIPE_ALL>();
++  }
++
+   __aicore__ void process(LocalTensor<float> input, const TaskRegion &region, int stage) {
+     auto v = values.Get<float>();
+     auto add = additive.Get<float>();
+@@ -119,7 +129,7 @@ class OnchipConsumer {
+   static constexpr int tile = 64;
+   SymmetricPlan &plan_;
+   float alpha_, beta_;
+-  TBuf<TPosition::VECCALC> values, additive, rounded, transposed, selection;
++  TBuf<TPosition::VECCALC> values, additive, rounded, transposed, selection, prefetched;
+   GlobalTensor<T> cg, dst;
+ };
+ 
+@@ -132,6 +142,7 @@ __aicore__ inline void epilogue_onchip(GM_ADDR c, GM_ADDR out, SymmetricPlan &pl
+   for (int task = GetBlockIdx() / 2; task < task_count<true>(plan); task += plan.cores) {
+     auto region = task_region<true>(plan, task);
+     for (int stage = 0; stage < 2; ++stage) {
++      consumer.prefetch(region, stage);
+       CrossCoreWaitFlag<0x2>(6 + stage);
+       consumer.process(received.Get<float>()[stage * 64 * 256], region, stage);
+       CrossCoreSetFlag<0x2, PIPE_MTE3>(8 + stage);

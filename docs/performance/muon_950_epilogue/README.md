@@ -8,7 +8,8 @@ PyTorch/torch_npu 2.14.0。基线是 `2439d01ea80edb18bd6cb341d461efd432a3a3e0`�
 
 基线源码不做兼容性修改，`pip install -e . --no-deps --no-build-isolation` 自动编译成功，
 安装后的算子、标准 NS 和五轮 Muon smoke 均通过。`--no-build-isolation` 复用已安装的构建依赖，
-避免共享主机访问包索引时阻塞；本轮尚未验证隔离构建环境中的 wheel 安装。
+避免共享主机访问包索引时阻塞；本轮另以 `pip wheel . --no-deps --no-build-isolation` 自动编译 wheel，
+安装到独立 venv 并在 `/tmp`（checkout 外）运行验证成功；未测试联网下载构建依赖。
 SoC 自动识别为 Ascend950DT_9582。本轮时序数据均设置 `CLOSE_MATMUL_K_SHIFT=1`。
 
 基线和优化版分别安装在独立 checkout / venv。原始兼容性 smoke 使用设备 0；
@@ -104,6 +105,84 @@ FP32 路径的本地 step 分别下降 1.74% 和 0.24%。后一项很小，不�
 实际峰值 allocated memory：expert 852 → 796 MiB，dense 1440 → 1356 MiB。
 峰值由多种临时张量共同决定，不能简单等同于完整 scratch 字节数。
 数据：[原版本地 step](baseline-local-steps.json)、[UB 本地 step](ub-local-steps.json)。
+
+### Wheel 安装复核
+
+提交 `0ef434ba` 的源码构建出 cp312/aarch64 wheel。安装环境复用系统 Torch，
+使用 `pip install --ignore-installed --no-deps <wheel>` 确保该 venv 实际安装 wheel，
+避免相同版本的外部元数据使 pip 跳过安装。没有改动系统 Python 包。
+包路径经 smoke 断言位于独立 wheel venv 的 `site-packages`，不依赖源目录或 PYTHONPATH。
+8 个边界用例以及两个参数场景第 1/5 步的结果，均与 editable 版逐 bit 一致。
+见 [wheel smoke](ub-wheel-smoke.json) 和 [wheel 本地 step](ub-wheel-local-steps.json)。
+
+## 第二轮：整条 additive strip 预取（未保留）
+
+- QuACK 依据：其独立 C-load / epilogue pipeline 提前加载 additive 输入，减少消费者等待。
+- 本机依据：第一轮 expert / dense 的 AIV MTE2 仍分别约 7.6 / 14.0 μs。
+  尝试在等待 Cube ready 之前，一次加载 `64×256` additive strip，增加 32 KiB UB，
+  再拆成 64×64 子块计算；总 UB 208.5 KiB，仍低于 248 KiB。
+- 实测 FP32 polynomial：expert 81.845 → 84.215 μs（慢 2.9%），
+  dense 401.883 → 404.225 μs（慢 0.6%）。
+  MTE2 时间反而变成 12.101 / 19.227 μs，Cube MAC 基本不变。
+- 结构上新增一次 UB 整理，而且对角任务会多加载不用的上三角 additive 数据。
+  粗粒度提前加载没有抵消这些成本。本轮没有更换矩阵乘 tiling 或 FP32 算术。
+- 本地 step 为 4.1625 / 23.1810 ms，相对第一轮 4.1652 / 23.1644 ms 变化很小，
+  expert 的微小正向波动不足以推翻 kernel 的稳定负收益。
+- 所有边界输出和第 1/5 步参数、动量指纹仍与第一轮相同。撤回预取源码，保留第一轮实现。
+
+[可重放实验补丁](round2-strip-prefetch.patch)、[kernel 数据](round2-kernel.json)、
+[本地 step 数据](round2-local-steps.json)，以及同目录 round2 CSV。
+这是一轮被实测否定的候选优化，不应作为性能改进接入训练。
+
+## 与原生 CANN 的 NS profiler 对照
+
+另外采集了每个模式各两次五轮 NS 的完整设备 trace。
+950 / CANN 9.2.0 下每次 NS：CANN 为 43 个 kernel，BF16 symm 为 48 个，
+FP32 epilogue 为 33 个。UB 优化前后 kernel 数不变，仅缩短已有融合 kernel。
+不能把此前其他版本的 kernel 数直接套到本次 CANN 上。
+
+按实际 launch 顺序拆出每轮 `A²`（CANN）或 `bA+cA²`（融合）的 kernel 平均时长：
+
+| 输入 NS shape | CANN 的 A² / μs | 原 GM 融合 / μs | UB 融合 / μs |
+| --- | ---: | ---: | ---: |
+| `[32,768,2048]` | 73.762 | 98.559 | 84.383 |
+| `[1,5120,17408]` | 630.021 | 418.892 | 401.810 |
+
+CANN 列不包含后续三个逐元素 kernel，不能只凭此列判断完整融合收益。
+expert 的 UB kernel 仍慢于单独 CANN 方形 GEMM，但融合省去逐元素 launch；
+dense 的对称计算本身已有收益，这次 UB 优化是在原收益上继续降低中转成本。
+矩形 `P @ X`、norm、转置、更新等没有被本次优化消除。
+
+未 profile 的完整 NS wall time：
+
+| 输入 NS shape | CANN / ms | 原 GM epilogue / ms | UB epilogue / ms |
+| --- | ---: | ---: | ---: |
+| expert | 3.554 | 3.454 | 3.370 |
+| dense | 26.562 | 21.870 | 21.762 |
+
+它们不含 Muon 的动量和参数更新；前面的本地 step 表包含这些操作。
+[原版 NS 时序](baseline-ns-timings.json)、[UB NS 时序](ub-ns-timings.json)、
+[逐算子 profiler 汇总](ns-profile-summary.json)，原始 kernel CSV 同目录。
+Profiler 在无 schedule 的两次调用采集结束时报告 schedule 警告；已核对导出的两次 NS
+各类 kernel 数与调用结构一致。时序结论使用 profiler 外的独立测量。
+
+## 检查与限制
+
+a5 上相关单元测试 13 项通过：
+
+```bash
+python -m pytest -q tests/ut/components/functional/test_symmetric_matmul.py \
+  tests/ut/core/optimizer/test_muon_symm_gemm.py
+```
+
+本地 lint 环境没有 Torch，UT 无法在本地启动，以上通过结果来自 a5 的 Torch 环境。
+此次仅验证 950 / CANN 9.2.0；没有重新运行其他架构的设备测试。
+完整 Qwen 模型、多卡通信、真实训练收敛不在已完成的证据范围中。
+测试容器未能初始化 NPU；自动审批拒绝了进一步使用特权容器，等待用户单独授权。
+已清理本次无法使用的非特权容器，没有改动主机 `/etc` 或其他任务。
+
+本轮 wheel SHA256：
+`ffd9b1d80f42def5d0604a6d71e0eacdbbbc9b25f2bfc48478607072885beb78`。
 
 ## 复现
 

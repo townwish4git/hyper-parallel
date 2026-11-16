@@ -1,2 +1,3 @@
 [codespell]
-ignore-words-list = cann,tbe,enque,SpecField,thw
+# ND is the CANN tensor format emitted by the archived device profiler.
+ignore-words-list = cann,tbe,enque,SpecField,thw,nd

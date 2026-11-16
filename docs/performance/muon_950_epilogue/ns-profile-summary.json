@@ -1,0 +1,418 @@
+{
+  "baseline": {
+    "expert": {
+      "cann": {
+        "LpNormV2": {
+          "count": 2,
+          "sum_us": 119.178,
+          "median_us": 59.589
+        },
+        "Add": {
+          "count": 22,
+          "sum_us": 1027.845,
+          "median_us": 17.508
+        },
+        "RealDiv": {
+          "count": 2,
+          "sum_us": 419.88,
+          "median_us": 209.94
+        },
+        "BatchMatMulV3": {
+          "count": 30,
+          "sum_us": 4477.424,
+          "median_us": 185.58499999999998
+        },
+        "Muls": {
+          "count": 30,
+          "sum_us": 854.4210000000002,
+          "median_us": 18.1235
+        }
+      },
+      "symm": {
+        "LpNormV2": {
+          "count": 2,
+          "sum_us": 121.054,
+          "median_us": 60.527
+        },
+        "Add": {
+          "count": 22,
+          "sum_us": 1031.416,
+          "median_us": 17.659
+        },
+        "RealDiv": {
+          "count": 2,
+          "sum_us": 420.02099999999996,
+          "median_us": 210.01049999999998
+        },
+        "hp_fused": {
+          "count": 20,
+          "sum_us": 2441.692,
+          "median_us": 121.9605
+        },
+        "Transpose": {
+          "count": 10,
+          "sum_us": 384.253,
+          "median_us": 38.1725
+        },
+        "Muls": {
+          "count": 30,
+          "sum_us": 885.4380000000001,
+          "median_us": 19.7765
+        },
+        "BatchMatMulV3": {
+          "count": 10,
+          "sum_us": 1894.074,
+          "median_us": 189.4555
+        }
+      },
+      "epilogue": {
+        "LpNormV2": {
+          "count": 2,
+          "sum_us": 118.22800000000001,
+          "median_us": 59.114000000000004
+        },
+        "Add": {
+          "count": 12,
+          "sum_us": 864.5770000000001,
+          "median_us": 85.9285
+        },
+        "RealDiv": {
+          "count": 2,
+          "sum_us": 420.246,
+          "median_us": 210.123
+        },
+        "hp_fused": {
+          "count": 20,
+          "sum_us": 2618.1779999999994,
+          "median_us": 130.844
+        },
+        "Transpose": {
+          "count": 10,
+          "sum_us": 384.67699999999996,
+          "median_us": 38.3655
+        },
+        "BatchMatMulV3": {
+          "count": 10,
+          "sum_us": 1902.2620000000002,
+          "median_us": 190.15449999999998
+        },
+        "Muls": {
+          "count": 10,
+          "sum_us": 498.36100000000005,
+          "median_us": 49.8335
+        }
+      }
+    },
+    "dense": {
+      "cann": {
+        "LpNormV2": {
+          "count": 2,
+          "sum_us": 197.18,
+          "median_us": 98.59
+        },
+        "Add": {
+          "count": 22,
+          "sum_us": 1990.7410000000002,
+          "median_us": 25.5135
+        },
+        "RealDiv": {
+          "count": 2,
+          "sum_us": 722.1600000000001,
+          "median_us": 361.08000000000004
+        },
+        "MatMulV3": {
+          "count": 30,
+          "sum_us": 48716.079,
+          "median_us": 2119.3355
+        },
+        "Muls": {
+          "count": 30,
+          "sum_us": 1398.587,
+          "median_us": 26.6425
+        }
+      },
+      "symm": {
+        "LpNormV2": {
+          "count": 2,
+          "sum_us": 196.65,
+          "median_us": 98.325
+        },
+        "Add": {
+          "count": 22,
+          "sum_us": 2006.9259999999995,
+          "median_us": 27.631500000000003
+        },
+        "RealDiv": {
+          "count": 2,
+          "sum_us": 722.129,
+          "median_us": 361.0645
+        },
+        "hp_fused": {
+          "count": 20,
+          "sum_us": 17985.629,
+          "median_us": 896.0615
+        },
+        "Transpose": {
+          "count": 10,
+          "sum_us": 523.3409999999999,
+          "median_us": 52.158500000000004
+        },
+        "Muls": {
+          "count": 30,
+          "sum_us": 1521.9500000000003,
+          "median_us": 31.462
+        },
+        "MatMulV3": {
+          "count": 10,
+          "sum_us": 21225.955,
+          "median_us": 2122.1620000000003
+        }
+      },
+      "epilogue": {
+        "LpNormV2": {
+          "count": 2,
+          "sum_us": 195.527,
+          "median_us": 97.7635
+        },
+        "Add": {
+          "count": 12,
+          "sum_us": 1741.81,
+          "median_us": 173.738
+        },
+        "RealDiv": {
+          "count": 2,
+          "sum_us": 722.346,
+          "median_us": 361.173
+        },
+        "hp_fused": {
+          "count": 20,
+          "sum_us": 18214.653000000002,
+          "median_us": 906.4475
+        },
+        "Transpose": {
+          "count": 10,
+          "sum_us": 521.4269999999999,
+          "median_us": 52.158500000000004
+        },
+        "MatMulV3": {
+          "count": 10,
+          "sum_us": 21222.742,
+          "median_us": 2122.081
+        },
+        "Muls": {
+          "count": 10,
+          "sum_us": 932.492,
+          "median_us": 93.283
+        }
+      }
+    }
+  },
+  "ub": {
+    "expert": {
+      "cann": {
+        "LpNormV2": {
+          "count": 2,
+          "sum_us": 119.164,
+          "median_us": 59.582
+        },
+        "Add": {
+          "count": 22,
+          "sum_us": 1032.187,
+          "median_us": 17.3915
+        },
+        "RealDiv": {
+          "count": 2,
+          "sum_us": 419.956,
+          "median_us": 209.978
+        },
+        "BatchMatMulV3": {
+          "count": 30,
+          "sum_us": 4475.4839999999995,
+          "median_us": 185.6465
+        },
+        "Muls": {
+          "count": 30,
+          "sum_us": 853.3379999999997,
+          "median_us": 18.1175
+        }
+      },
+      "symm": {
+        "LpNormV2": {
+          "count": 2,
+          "sum_us": 119.117,
+          "median_us": 59.5585
+        },
+        "Add": {
+          "count": 22,
+          "sum_us": 1036.708,
+          "median_us": 17.591500000000003
+        },
+        "RealDiv": {
+          "count": 2,
+          "sum_us": 420.276,
+          "median_us": 210.138
+        },
+        "hp_fused": {
+          "count": 20,
+          "sum_us": 2425.1320000000005,
+          "median_us": 121.141
+        },
+        "Transpose": {
+          "count": 10,
+          "sum_us": 376.39300000000003,
+          "median_us": 37.581500000000005
+        },
+        "Muls": {
+          "count": 30,
+          "sum_us": 883.8,
+          "median_us": 19.943
+        },
+        "BatchMatMulV3": {
+          "count": 10,
+          "sum_us": 1887.491,
+          "median_us": 188.63600000000002
+        }
+      },
+      "epilogue": {
+        "LpNormV2": {
+          "count": 2,
+          "sum_us": 118.334,
+          "median_us": 59.167
+        },
+        "Add": {
+          "count": 12,
+          "sum_us": 861.6709999999998,
+          "median_us": 85.706
+        },
+        "RealDiv": {
+          "count": 2,
+          "sum_us": 419.822,
+          "median_us": 209.911
+        },
+        "hp_fused": {
+          "count": 20,
+          "sum_us": 2466.857,
+          "median_us": 123.0935
+        },
+        "Transpose": {
+          "count": 10,
+          "sum_us": 378.22299999999996,
+          "median_us": 38.2505
+        },
+        "BatchMatMulV3": {
+          "count": 10,
+          "sum_us": 1890.167,
+          "median_us": 188.8995
+        },
+        "Muls": {
+          "count": 10,
+          "sum_us": 496.189,
+          "median_us": 49.789
+        }
+      }
+    },
+    "dense": {
+      "cann": {
+        "LpNormV2": {
+          "count": 2,
+          "sum_us": 197.123,
+          "median_us": 98.5615
+        },
+        "Add": {
+          "count": 22,
+          "sum_us": 1978.946,
+          "median_us": 25.4645
+        },
+        "RealDiv": {
+          "count": 2,
+          "sum_us": 722.017,
+          "median_us": 361.0085
+        },
+        "MatMulV3": {
+          "count": 30,
+          "sum_us": 48724.04500000001,
+          "median_us": 2119.701
+        },
+        "Muls": {
+          "count": 30,
+          "sum_us": 1394.8860000000004,
+          "median_us": 26.4725
+        }
+      },
+      "symm": {
+        "LpNormV2": {
+          "count": 2,
+          "sum_us": 195.76,
+          "median_us": 97.88
+        },
+        "Add": {
+          "count": 22,
+          "sum_us": 2007.0529999999999,
+          "median_us": 27.836
+        },
+        "RealDiv": {
+          "count": 2,
+          "sum_us": 722.196,
+          "median_us": 361.098
+        },
+        "hp_fused": {
+          "count": 20,
+          "sum_us": 18021.965000000004,
+          "median_us": 900.1949999999999
+        },
+        "Transpose": {
+          "count": 10,
+          "sum_us": 513.582,
+          "median_us": 51.3665
+        },
+        "Muls": {
+          "count": 30,
+          "sum_us": 1503.907,
+          "median_us": 31.497
+        },
+        "MatMulV3": {
+          "count": 10,
+          "sum_us": 21222.694,
+          "median_us": 2122.169
+        }
+      },
+      "epilogue": {
+        "LpNormV2": {
+          "count": 2,
+          "sum_us": 196.099,
+          "median_us": 98.0495
+        },
+        "Add": {
+          "count": 12,
+          "sum_us": 1738.064,
+          "median_us": 173.15949999999998
+        },
+        "RealDiv": {
+          "count": 2,
+          "sum_us": 722.0,
+          "median_us": 361.0
+        },
+        "hp_fused": {
+          "count": 20,
+          "sum_us": 18039.160999999996,
+          "median_us": 898.7875
+        },
+        "Transpose": {
+          "count": 10,
+          "sum_us": 514.49,
+          "median_us": 51.375
+        },
+        "MatMulV3": {
+          "count": 10,
+          "sum_us": 21226.353,
+          "median_us": 2122.754
+        },
+        "Muls": {
+          "count": 10,
+          "sum_us": 927.5089999999999,
+          "median_us": 92.648
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,48 @@
+{
+  "package": "/home/twx/hp-950-original-20261116/hyper_parallel/__init__.py",
+  "device": "Ascend950DT_9582",
+  "products": [
+    {
+      "shape": [
+        257,
+        513
+      ],
+      "ascendc_selected": false,
+      "relative_l2": 0.0
+    },
+    {
+      "shape": [
+        2,
+        1024,
+        4096
+      ],
+      "ascendc_selected": false,
+      "relative_l2": 0.0
+    },
+    {
+      "shape": [
+        32,
+        768,
+        768
+      ],
+      "ascendc_selected": true,
+      "relative_l2": 0.0
+    }
+  ],
+  "muon": {
+    "shape": [
+      32,
+      768,
+      2048
+    ],
+    "different_bit_patterns": 0,
+    "optimizer_steps": 5,
+    "step_and_state_restore": true
+  },
+  "epilogue": {
+    "formula_relative_l2": 0.0,
+    "ns_relative_l2": 0.012358770705759525,
+    "ns_different_bit_patterns": 37113576,
+    "ns_elements": 50331648
+  }
+}

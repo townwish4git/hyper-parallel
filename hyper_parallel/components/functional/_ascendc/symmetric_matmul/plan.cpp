@@ -100,10 +100,27 @@ extern "C" void hp_plan_info(void *pointer, int *values) {
 }
 
 extern "C" void hp_destroy(void *plan) { delete static_cast<SymmetricPlan *>(plan); }
+extern "C" int hp_onchip(void *pointer) {
+#ifdef HP_SYMM_950_UB
+  auto *plan = static_cast<SymmetricPlan *>(pointer);
+  CubeTiling tiling;
+  std::memcpy(&tiling, plan->tiling, sizeof(tiling));
+  return !plan->direct && plan->n % 256 == 0 && plan->tile == 256 && plan->row_tile == 256 && tiling.baseM == 256 &&
+         tiling.baseN == 256;
+#else
+  return 0;
+#endif
+}
+
 extern "C" uint32_t hp_launch(void *plan, void *stream, void *a, void *b, void *c, void *scratch, void *out,
                               float alpha, float beta) {
   auto *config = static_cast<SymmetricPlan *>(plan);
   if (alpha != 0) {
+    if (hp_onchip(plan)) {
+      auto onchip = *config;
+      onchip.direct = 2;
+      return aclrtlaunch_hp_fused(onchip.cores, stream, a, b, c, scratch, out, &onchip, alpha, beta);
+    }
     return aclrtlaunch_hp_fused(config->cores, stream, a, b, c, scratch, out, config, alpha, beta);
   }
   return aclrtlaunch_hp_epilogue(config->cores * 2, stream, scratch, c, out, config, alpha, beta);

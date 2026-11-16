@@ -10,10 +10,32 @@
 // limitations under the License.
 #include "symmetric_matmul/product.h"
 #include "symmetric_matmul/epilogue.h"
+#include "symmetric_matmul/onchip.h"
+
+#if defined(__NPU_ARCH__) && __NPU_ARCH__ == 3510
+template <class T>
+__aicore__ inline void dispatch_onchip(GM_ADDR a, GM_ADDR b, GM_ADDR c, GM_ADDR out, SymmetricPlan &plan, float alpha,
+                                       float beta) {
+  if ASCEND_IS_AIC {
+    product_onchip<T>(a, b, out, plan);
+  } else {
+    epilogue_onchip<T>(c, out, plan, alpha, beta);
+  }
+}
+#endif
 
 extern "C" __global__ __aicore__ void hp_fused(GM_ADDR a, GM_ADDR b, GM_ADDR c, GM_ADDR scratch, GM_ADDR out,
                                                SymmetricPlan plan, float alpha, float beta) {
   KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_MIX_AIC_1_2);
+#if defined(__NPU_ARCH__) && __NPU_ARCH__ == 3510
+  if (plan.direct == 2) {
+    if (plan.dtype == 0)
+      dispatch_onchip<half>(a, b, c, out, plan, alpha, beta);
+    else
+      dispatch_onchip<bfloat16_t>(a, b, c, out, plan, alpha, beta);
+    return;
+  }
+#endif
   if ASCEND_IS_AIC {
     if (plan.dtype == 0)
       dispatch_product<half, true>(a, b, scratch, plan);

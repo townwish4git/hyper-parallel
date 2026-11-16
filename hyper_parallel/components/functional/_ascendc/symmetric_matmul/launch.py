@@ -49,6 +49,9 @@ def _library():
     library.hp_plan.restype = ctypes.c_void_p
     library.hp_plan_info.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_int)]
     library.hp_plan_info.restype = None
+    if hasattr(library, "hp_onchip"):
+        library.hp_onchip.argtypes = [ctypes.c_void_p]
+        library.hp_onchip.restype = ctypes.c_int
     library.hp_destroy.argtypes = [ctypes.c_void_p]
     library.hp_destroy.restype = None
     library.hp_launch.argtypes = [ctypes.c_void_p] * 7 + [ctypes.c_float] * 2
@@ -68,6 +71,7 @@ class _Plan:
         self.n, self.k, self.tile = values[:3]
         self.base_shape = tuple(values[3:6])
         self.row_tile = values[6]
+        self.onchip = bool(self.library.hp_onchip(self.pointer)) if hasattr(self.library, "hp_onchip") else False
 
     def __del__(self):
         if self.pointer:
@@ -126,7 +130,7 @@ def launch_symmetric_matmul(
         if beta != 0:
             c = _pad(c, padded_n, padded_n)
         destination = _destination(out, n, padded_n)
-        scratch = destination if direct or product_scale == 0 else torch.empty(
+        scratch = destination if direct or plan.onchip or product_scale == 0 else torch.empty(
             destination.shape, device=a.device, dtype=torch.float32,
         )
         status = plan.library.hp_launch(

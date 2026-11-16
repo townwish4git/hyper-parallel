@@ -52,6 +52,8 @@ def _library(folder):
     library.hp_destroy.argtypes, library.hp_destroy.restype = [ctypes.c_void_p], None
     library.hp_launch.argtypes = [ctypes.c_void_p] * 7 + [ctypes.c_float] * 2
     library.hp_launch.restype = ctypes.c_uint32
+    if hasattr(library, "hp_onchip"):
+        library.hp_onchip.argtypes, library.hp_onchip.restype = [ctypes.c_void_p], ctypes.c_int
     return library
 
 
@@ -70,6 +72,7 @@ class _Operation:
         self.metadata = {"n": values[0], "k": values[1], "tile": values[2],
                          "base_shape": list(values[3:6]), "row_tile": values[6],
                          "cores": cores, "direct": self.direct, "tiling_words": list(raw.tiling)}
+        self.metadata["onchip"] = bool(library.hp_onchip(self.pointer)) if hasattr(library, "hp_onchip") else False
         stream = torch_npu.npu.current_stream().npu_stream
         workspace = output if self.direct else scratch
         self.arguments = (self.pointer, stream, operand.data_ptr(), transposed.data_ptr(), operand.data_ptr(),

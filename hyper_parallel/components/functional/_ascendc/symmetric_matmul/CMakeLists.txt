@@ -17,6 +17,9 @@ ascendc_include_directories(hp_epilogue_kernel PRIVATE
 ascendc_include_directories(hp_fused_kernel PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/..)
 add_library(hp_symmetric SHARED plan.cpp)
+if(SOC_VERSION MATCHES "^Ascend950")
+    target_compile_definitions(hp_symmetric PRIVATE HP_SYMM_950_UB=1)
+endif()
 target_include_directories(hp_symmetric PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/..
     ${ASCEND_CANN_PACKAGE_PATH}/include

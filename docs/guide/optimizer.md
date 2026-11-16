@@ -206,3 +206,8 @@ builds compile the native operator automatically. For the validated bitwise
 comparison with native CANN, export `CLOSE_MATMUL_K_SHIFT=1` before starting all
 workers. See the [installation, training and resume guide](muon_symm_gemm.md)
 for the complete deployment steps and measured support boundary.
+
+An additional `use_symm_gemm_epilogue=True` option fuses the square polynomial
+in FP32 where Ascend C is selected. It requires `use_symm_gemm=True`, defaults
+to false, and changes rounding. Its precision/performance tradeoff is documented
+in the [epilogue experiment](../performance/muon_symm_epilogue/README.md).

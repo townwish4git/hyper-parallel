@@ -1,0 +1,200 @@
+{
+  "qwen3-30b-a3b": {
+    "timing": {
+      "False": {
+        "median_ms": 994.767822265625,
+        "block_medians_ms": [
+          989.1815185546875,
+          999.6671142578125
+        ],
+        "peak_allocated_gib": 21.65066909790039
+      },
+      "True": {
+        "median_ms": 930.7041625976562,
+        "block_medians_ms": [
+          929.9180908203125,
+          931.1251220703125
+        ],
+        "peak_allocated_gib": 21.72197914123535
+      },
+      "epilogue": {
+        "median_ms": 911.2405700683594,
+        "block_medians_ms": [
+          910.9071044921875,
+          911.3373413085938
+        ],
+        "peak_allocated_gib": 21.86115026473999
+      }
+    },
+    "symm_reduction_percent": 6.440061513254536,
+    "epilogue_reduction_from_cann_percent": 8.396658026898063,
+    "epilogue_reduction_from_symm_percent": 2.0912759726971375,
+    "precision": [
+      {
+        "steps": 1,
+        "parameters": {
+          "elements": 29909581824,
+          "different": 7263465952,
+          "different_bit_patterns": 7263465952,
+          "nonfinite": 0,
+          "max_abs": 0.00048828125,
+          "reference_l2": 3476.3049327340423,
+          "relative_l2": 0.0018464589677441294,
+          "cosine": 0.9999982952952456
+        },
+        "effective_updates": {
+          "elements": 29909581824,
+          "different": 7263465952,
+          "different_bit_patterns": 7263465952,
+          "nonfinite": 0,
+          "max_abs": 0.00048828125,
+          "reference_l2": 347.5855428925828,
+          "relative_l2": 0.0184669775510301,
+          "cosine": 0.9998294907398302
+        },
+        "momentum": {
+          "elements": 29909581824,
+          "different": 0,
+          "different_bit_patterns": 0,
+          "nonfinite": 0,
+          "max_abs": 0,
+          "reference_l2": 8647.175791660837,
+          "relative_l2": 0.0,
+          "cosine": 1.0
+        }
+      },
+      {
+        "steps": 5,
+        "parameters": {
+          "elements": 29909581824,
+          "different": 14859241163,
+          "different_bit_patterns": 14859241163,
+          "nonfinite": 0,
+          "max_abs": 0.001953125,
+          "reference_l2": 3673.945376006501,
+          "relative_l2": 0.004037356790211851,
+          "cosine": 0.9999918498576319
+        },
+        "effective_updates": {
+          "elements": 29909581824,
+          "different": 14859241163,
+          "different_bit_patterns": 14859241163,
+          "nonfinite": 0,
+          "max_abs": 0.001953125,
+          "reference_l2": 1238.6183186123656,
+          "relative_l2": 0.011975463375436684,
+          "cosine": 0.9999282929074972
+        },
+        "momentum": {
+          "elements": 29909581824,
+          "different": 0,
+          "different_bit_patterns": 0,
+          "nonfinite": 0,
+          "max_abs": 0,
+          "reference_l2": 17542.58134668579,
+          "relative_l2": 0.0,
+          "cosine": 1.0
+        }
+      }
+    ]
+  },
+  "qwen3.5-27b": {
+    "timing": {
+      "False": {
+        "median_ms": 3196.7457275390625,
+        "block_medians_ms": [
+          3194.590087890625,
+          3199.975341796875
+        ],
+        "peak_allocated_gib": 20.580400466918945
+      },
+      "True": {
+        "median_ms": 2982.474609375,
+        "block_medians_ms": [
+          2984.2890625,
+          2981.466552734375
+        ],
+        "peak_allocated_gib": 20.57893466949463
+      },
+      "epilogue": {
+        "median_ms": 2969.212158203125,
+        "block_medians_ms": [
+          2968.356201171875,
+          2969.586181640625
+        ],
+        "peak_allocated_gib": 20.579662322998047
+      }
+    },
+    "symm_reduction_percent": 6.702788911804191,
+    "epilogue_reduction_from_cann_percent": 7.1176624207487045,
+    "epilogue_reduction_from_symm_percent": 0.4446794326491976,
+    "precision": [
+      {
+        "steps": 1,
+        "parameters": {
+          "elements": 24352522240,
+          "different": 6000588513,
+          "different_bit_patterns": 6000588513,
+          "nonfinite": 0,
+          "max_abs": 0.00048828125,
+          "reference_l2": 3136.809928907462,
+          "relative_l2": 0.0018234839647870175,
+          "cosine": 0.9999983374698187
+        },
+        "effective_updates": {
+          "elements": 24352522240,
+          "different": 6000588513,
+          "different_bit_patterns": 6000588513,
+          "nonfinite": 0,
+          "max_abs": 0.00048828125,
+          "reference_l2": 313.9258868415,
+          "relative_l2": 0.01822061462817639,
+          "cosine": 0.9998341683320996
+        },
+        "momentum": {
+          "elements": 24352522240,
+          "different": 0,
+          "different_bit_patterns": 0,
+          "nonfinite": 0,
+          "max_abs": 0,
+          "reference_l2": 7802.64137488493,
+          "relative_l2": 0.0,
+          "cosine": 1.0
+        }
+      },
+      {
+        "steps": 5,
+        "parameters": {
+          "elements": 24352522240,
+          "different": 13085626712,
+          "different_bit_patterns": 13085626712,
+          "nonfinite": 0,
+          "max_abs": 0.001953125,
+          "reference_l2": 3323.057974654538,
+          "relative_l2": 0.004034204651810877,
+          "cosine": 0.9999918697519872
+        },
+        "effective_updates": {
+          "elements": 24352522240,
+          "different": 13085626712,
+          "different_bit_patterns": 13085626712,
+          "nonfinite": 0,
+          "max_abs": 0.001953125,
+          "reference_l2": 1141.18335394985,
+          "relative_l2": 0.011747363728351135,
+          "cosine": 0.9999315139281717
+        },
+        "momentum": {
+          "elements": 24352522240,
+          "different": 0,
+          "different_bit_patterns": 0,
+          "nonfinite": 0,
+          "max_abs": 0,
+          "reference_l2": 15829.181327512359,
+          "relative_l2": 0.0,
+          "cosine": 1.0
+        }
+      }
+    ]
+  }
+}

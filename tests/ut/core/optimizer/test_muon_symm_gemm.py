@@ -36,9 +36,10 @@ class TestMuonSymmetricGemm(unittest.TestCase):
         Description: Normalize prefixed and unprefixed configuration keys.
         Expectation: The explicit switch reaches the Muon constructor.
         """
-        for key in ("use_symm_gemm", "muon_use_symm_gemm"):
-            actual = _filter_optimizer_config("muon", Muon, {key: True})
-            self.assertEqual(actual, {"use_symm_gemm": True})
+        for flag in ("use_symm_gemm", "use_symm_gemm_epilogue"):
+            for key in (flag, "muon_" + flag):
+                actual = _filter_optimizer_config("muon", Muon, {key: True})
+                self.assertEqual(actual, {flag: True})
 
     @arg_mark(plat_marks=["cpu_linux", "cpu_macos", "cpu_windows"], level_mark="level0",
               card_mark="dryrun", essential_mark="essential")
@@ -73,6 +74,9 @@ class TestMuonSymmetricGemm(unittest.TestCase):
                     reference = zeropower_via_newtonschulz5(value, steps, ns_variant=variant)
                     actual = zeropower_via_newtonschulz5(value, steps, ns_variant=variant, use_symm_gemm=True)
                     torch.testing.assert_close(actual, reference, atol=0, rtol=0, check_stride=True)
+                    fused = zeropower_via_newtonschulz5(
+                        value, steps, ns_variant=variant, use_symm_gemm=True, use_symm_gemm_epilogue=True)
+                    torch.testing.assert_close(fused, reference, atol=0, rtol=0, check_stride=True)
 
     @arg_mark(plat_marks=["cpu_linux", "cpu_macos", "cpu_windows"], level_mark="level0",
               card_mark="dryrun", essential_mark="essential")
@@ -99,12 +103,15 @@ class TestMuonSymmetricGemm(unittest.TestCase):
         inputs = [torch.randn(8, 16, dtype=torch.bfloat16) for _ in range(2)]
         with patch("hyper_parallel.core.optimizer.muon.zeropower_via_newtonschulz5",
                    side_effect=lambda value, **_: value.clone()) as ns:
-            optimizer._compute_batched_ns_outputs_for_tensors(inputs, 5, use_symm_gemm=True)
+            optimizer._compute_batched_ns_outputs_for_tensors(
+                inputs, 5, use_symm_gemm=True, use_symm_gemm_epilogue=True)
             self.assertEqual(ns.call_args.args[0].shape, (2, 8, 16))
             self.assertTrue(ns.call_args.kwargs["use_symm_gemm"])
+            self.assertTrue(ns.call_args.kwargs["use_symm_gemm_epilogue"])
         optimizer.zeropower_fn = lambda value, steps: value.clone()
         with patch("hyper_parallel.core.optimizer.muon.zeropower_via_newtonschulz5") as ns:
-            optimizer._compute_batched_ns_outputs_for_tensors(inputs, 5, use_symm_gemm=True)
+            optimizer._compute_batched_ns_outputs_for_tensors(
+                inputs, 5, use_symm_gemm=True, use_symm_gemm_epilogue=True)
             ns.assert_not_called()
 
     @arg_mark(plat_marks=["cpu_linux", "cpu_macos", "cpu_windows"], level_mark="level0",
@@ -116,11 +123,12 @@ class TestMuonSymmetricGemm(unittest.TestCase):
         Expectation: All stated numerical, routing or validation assertions hold.
         """
         parameters = [torch.nn.Parameter(torch.ones(2, 4)) for _ in range(2)]
-        optimizer = Muon([{"params": [parameters[0]], "use_symm_gemm": True},
+        optimizer = Muon([{"params": [parameters[0]], "use_symm_gemm": True, "use_symm_gemm_epilogue": True},
                           {"params": [parameters[1]], "use_symm_gemm": False}])
         restored = Muon([{"params": [parameters[0]]}, {"params": [parameters[1]]}])
         restored.load_state_dict(optimizer.state_dict())
         self.assertEqual([group["use_symm_gemm"] for group in restored.param_groups], [True, False])
+        self.assertEqual([group["use_symm_gemm_epilogue"] for group in restored.param_groups], [True, False])
 
     @arg_mark(plat_marks=["cpu_linux", "cpu_macos", "cpu_windows"], level_mark="level0",
               card_mark="dryrun", essential_mark="essential")
@@ -137,3 +145,20 @@ class TestMuonSymmetricGemm(unittest.TestCase):
                     zeropower_via_newtonschulz5(value, 5, use_symm_gemm=flag)
                 with self.assertRaisesRegex(ValueError, "use_symm_gemm"):
                     Muon([torch.nn.Parameter(value)], use_symm_gemm=flag)
+
+    @arg_mark(plat_marks=["cpu_linux", "cpu_macos", "cpu_windows"], level_mark="level0",
+              card_mark="dryrun", essential_mark="essential")
+    def test_epilogue_requires_symmetric_switch_and_bool(self):
+        """Feature: Epilogue option validation.
+
+        Description: Reject an unsupported option combination and non-boolean flags.
+        Expectation: Both public entry points reject invalid epilogue options.
+        """
+        value = torch.zeros(7, 19, dtype=torch.bfloat16)
+        for symmetric, fused in ((False, True), (True, "true"), (True, 1), (True, None)):
+            options = {"use_symm_gemm": symmetric, "use_symm_gemm_epilogue": fused}
+            with self.subTest(options=options):
+                with self.assertRaisesRegex(ValueError, "use_symm_gemm_epilogue"):
+                    zeropower_via_newtonschulz5(value, 5, **options)
+                with self.assertRaisesRegex(ValueError, "use_symm_gemm_epilogue"):
+                    Muon([torch.nn.Parameter(value)], **options)

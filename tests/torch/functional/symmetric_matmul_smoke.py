@@ -65,6 +65,31 @@ def _products():
 
 
 @torch.no_grad()
+def _epilogue():
+    # A small FP64 CPU reference checks the fused formula independently of CANN.
+    value = torch.randn(256, 256, dtype=torch.float64) / 32
+    value = (value + value.mT).to(torch.bfloat16)
+    operand = value.npu()
+    original = operand.clone()
+    coeff_b, coeff_c = -6.8946, 2.9270
+    reference = (coeff_c * (value.double() @ value.double()) + coeff_b * value.double()).bfloat16()
+    actual = symmetric_matmul(operand, operand, operand, alpha=coeff_c, beta=coeff_b, backend="ascendc")
+    error = _relative(actual.cpu(), reference)
+    assert error < 0.004, f"FP32 epilogue disagrees with the independent formula: {error}"
+    assert torch.equal(operand, original), "Epilogue changed its additive/GEMM input"
+    assert torch.equal(actual, actual.mT), "Fused polynomial lost symmetry"
+    ns_input = torch.randn(32, 768, 2048, device="npu", dtype=torch.bfloat16) * 0.01
+    baseline = zeropower_via_newtonschulz5(ns_input, 5, use_symm_gemm=True)
+    fused = zeropower_via_newtonschulz5(
+        ns_input, 5, use_symm_gemm=True, use_symm_gemm_epilogue=True)
+    assert torch.isfinite(fused).all(), "Fused NS produced nonfinite values"
+    different = torch.count_nonzero(fused.view(torch.int16) != baseline.view(torch.int16)).item()
+    assert different > 0, "Expected the FP32 epilogue to exercise different rounding"
+    return {"formula_relative_l2": error, "ns_relative_l2": _relative(fused, baseline),
+            "ns_different_bit_patterns": different, "ns_elements": fused.numel()}
+
+
+@torch.no_grad()
 def _optimizer():
     value = torch.randn(32, 768, 2048, device="npu", dtype=torch.bfloat16) * 0.01
     original = value.clone()
@@ -106,6 +131,7 @@ def test_installed_symmetric_muon() -> None:
     torch.manual_seed(42)
     _products()
     _optimizer()
+    _epilogue()
     torch_npu.npu.synchronize()
 
 
@@ -121,7 +147,7 @@ def main() -> None:
     torch_npu.npu.set_device(0)
     torch.manual_seed(42)
     report = {"package": str(location), "device": torch_npu.npu.get_device_name(0),
-              "products": _products(), "muon": _optimizer()}
+              "products": _products(), "muon": _optimizer(), "epilogue": _epilogue()}
     torch_npu.npu.synchronize()
     Path(args.output).write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(report), flush=True)

@@ -1,0 +1,7 @@
+{
+  "hyper_parallel/core/optimizer/muon.py": "595fde596c728dae1c3a70ad397726445eda933a1352e87bc720a2c4d6ccb453",
+  "tests/torch/functional/symmetric_matmul_smoke.py": "80ec2d58c0ae52c18e5e118a869392355aa22bc2653a30d0abc4caf1a9e140c7",
+  "tests/torch/optimizer/benchmark_muon_models.py": "6fc6f3f18d70fdd052f2442a5ebd3f65083060f7866f82509119d1cbc1bf24bc",
+  "tests/ut/core/optimizer/test_muon_symm_gemm.py": "ffc1fddd90bfed769481dcf921e42c12003bca83f753901a7a7bba675df6d7a2",
+  "tests/torch/optimizer/profile_muon_epilogue.py": "9970cbceb6fa9d989fa6282c6f59828da10ec152b9a5a224df920067a6e6c691"
+}

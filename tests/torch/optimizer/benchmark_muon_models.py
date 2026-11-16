@@ -43,7 +43,7 @@ _METRICS = ("parameters", "effective_updates", "momentum")
 
 
 def _options(enabled):
-    return {"use_symm_gemm": enabled}
+    return {"use_symm_gemm": bool(enabled), "use_symm_gemm_epilogue": enabled == "epilogue"}
 
 
 def _optimizer(parameters, enabled):
@@ -151,7 +151,7 @@ def _accuracy(parameters, names, args, steps):
     initialize_parameters(parameters, args.seed)
     initial = [to_local_if_dtensor(p).cpu() for p in parameters]
     baseline_mode = False
-    candidates = [True]
+    candidates = [True, "epilogue"] if args.include_epilogue else [True]
     optimizer = _reset(parameters, args.seed, baseline_mode)
     for step in range(steps):
         initialize_gradients(parameters, args.seed, step)
@@ -214,6 +214,7 @@ def main() -> None:
     parser.add_argument("--warmup", type=int, default=2)
     parser.add_argument("--cycles", type=int, default=2)
     parser.add_argument("--seed", type=int, default=51430)
+    parser.add_argument("--include-epilogue", action="store_true", help="Also measure the FP32 polynomial epilogue")
     parser.add_argument("--accuracy-steps", nargs="*", type=int, default=[1, 5])
     parser.add_argument("--metric-threads", type=int, default=1,
                         help="CPU threads only for precision statistics; "
@@ -223,7 +224,7 @@ def main() -> None:
         raise ValueError("--metric-threads must be positive")
     if os.environ.get("CLOSE_MATMUL_K_SHIFT") != "1":
         raise ValueError("The precision comparison requires CLOSE_MATMUL_K_SHIFT=1 before process startup")
-    modes = [False, True]
+    modes = [False, True, "epilogue"] if args.include_epilogue else [False, True]
     torch.npu.set_device(int(os.environ["LOCAL_RANK"]))
     dist.init_process_group("hccl", timeout=timedelta(minutes=30))
     mesh = init_device_mesh("npu", (dist.get_world_size(),), mesh_dim_names=("shard",))

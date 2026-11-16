@@ -11,7 +11,7 @@ model's forward/backward does not require compiling its optimizer step.
 
 ## 1. Cherry-pick the feature
 
-The feature branch contains one commit on top of upstream master. It includes the
+The base `feat/muon-symm-gemm` branch contains one commit on top of upstream master. It includes the
 operator, Python dispatch, Muon switch, automatic build support, tests and docs.
 There is no dependency on the archived experimental branch.
 
@@ -194,7 +194,7 @@ coefficients, then computes a rectangular update. Only the first two symmetric
 products can use Ascend C. The kernel computes one triangle and mirrors it;
 CANN computes both triangles independently. Muon keeps the original separate
 BF16 coefficient multiplies/addition and preallocated output layouts. It does
-not use the generic operator's fused coefficient epilogue for NS.
+not use the generic operator's fused coefficient epilogue for NS by default.
 
 The static selector uses the actual matrix after reshape and batching. For
 `[B,N,K] @ [B,K,N]`, Ascend C is selected only when native libraries are installed,
@@ -246,3 +246,25 @@ GEMM can be non-bitwise-symmetric on other kernels. Validate a changed stack or
 new shape distribution before relying on identical trajectories. Other Ascend
 SoCs, FP16 optimizer training, alternate coefficient families, long training
 convergence and graph capture are not covered by the full-model acceptance run.
+
+## 8. Optional FP32 polynomial epilogue
+
+The incremental `feat/muon-symm-epilogue` branch adds an independent, default-off
+`use_symm_gemm_epilogue=True` option. Apply this incremental commit after the base
+feature; it is not a standalone cherry-pick onto master. It requires `use_symm_gemm=True` and also
+accepts the prefixed `muon_use_symm_gemm_epilogue` configuration key. Both options
+are stored in parameter groups/checkpoints; explicitly restore both desired
+values after loading optimizer state. An explicit `zeropower_fn` still overrides NS.
+
+Where static dispatch selects Ascend C, the second symmetric product directly
+writes `P = BF16(c * GEMM_FP32(A, A) + b * FP32(A))` to the other square buffer.
+It replaces the independent coefficient multiplies/addition. The first product,
+rectangular GEMM, final residual update, momentum and communication are unchanged.
+Native fallback retains separate input-dtype coefficient operations. This option
+changes rounding and does not preserve the baseline bitwise guarantee even with
+K-shift closed. It uses the existing FP32 GM scratch implementation, so fewer
+operator calls do not necessarily imply lower runtime.
+
+Add `--include-epilogue` to the benchmark commands above to compare all three
+configurations. See the [epilogue experiment](../performance/muon_symm_epilogue/README.md)
+for the measured performance and numerical differences.

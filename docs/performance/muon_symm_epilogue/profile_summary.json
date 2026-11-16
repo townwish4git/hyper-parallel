@@ -1,0 +1,247 @@
+{
+  "ns_calls_per_trace": 2,
+  "expected_kernel_counts_verified": true,
+  "warnings": "Profiler warned about stopping in RECORD state without an explicit schedule. Every trace contains both normalization calls and all 30 GEMMs; elementwise counts match 2 x 5 NS iterations.",
+  "cases": {
+    "dense": {
+      "cann": {
+        "kernel_count_per_ns": 43.0,
+        "total_kernel_us_per_ns": 48833.503,
+        "elementwise_us_per_ns": 3694.3624999999993,
+        "xxt_us": 17664.197,
+        "square_us": 5029.2635,
+        "rectangular_us": 22010.6205,
+        "groups": {
+          "aclnnLinalgVectorNorm_LpNormV2_LpNormV2": {
+            "count": 2,
+            "total_us": 506.981
+          },
+          "aclnnAdds_AddAiCore_Add": {
+            "count": 2,
+            "total_us": 3.201
+          },
+          "aclnnDiv_RealDivAiCore_RealDiv": {
+            "count": 2,
+            "total_us": 359.937
+          },
+          "aclnnMatmul_BatchMatMulNd_BatchMatMulV2": {
+            "count": 30,
+            "total_us": 89408.16200000003
+          },
+          "aclnnInplaceMuls_Muls_Muls": {
+            "count": 30,
+            "total_us": 1604.617
+          },
+          "aclnnAdd_AddAiCore_Add": {
+            "count": 20,
+            "total_us": 5784.107999999999
+          }
+        }
+      },
+      "epilogue": {
+        "kernel_count_per_ns": 33.0,
+        "total_kernel_us_per_ns": 42762.97949999998,
+        "elementwise_us_per_ns": 3182.129,
+        "xxt_us": 12464.533500000001,
+        "square_us": 3647.0829999999996,
+        "rectangular_us": 22463.3135,
+        "groups": {
+          "aclnnLinalgVectorNorm_LpNormV2_LpNormV2": {
+            "count": 2,
+            "total_us": 518.423
+          },
+          "aclnnAdds_AddAiCore_Add": {
+            "count": 2,
+            "total_us": 3.54
+          },
+          "aclnnDiv_RealDivAiCore_RealDiv": {
+            "count": 2,
+            "total_us": 360.058
+          },
+          "hp_fused": {
+            "count": 20,
+            "total_us": 32223.232999999997
+          },
+          "aclnnInplaceCopy_TransposeAiCore_Transpose": {
+            "count": 10,
+            "total_us": 1129.82
+          },
+          "aclnnMatmul_BatchMatMulNd_BatchMatMulV2": {
+            "count": 10,
+            "total_us": 44926.627
+          },
+          "aclnnInplaceMuls_Muls_Muls": {
+            "count": 10,
+            "total_us": 1032.9470000000001
+          },
+          "aclnnAdd_AddAiCore_Add": {
+            "count": 10,
+            "total_us": 5331.311
+          }
+        }
+      },
+      "symm": {
+        "kernel_count_per_ns": 48.0,
+        "total_kernel_us_per_ns": 43134.62249999999,
+        "elementwise_us_per_ns": 3711.6940000000004,
+        "xxt_us": 12469.175,
+        "square_us": 3358.3675000000003,
+        "rectangular_us": 22589.344499999996,
+        "groups": {
+          "aclnnLinalgVectorNorm_LpNormV2_LpNormV2": {
+            "count": 2,
+            "total_us": 517.462
+          },
+          "aclnnAdds_AddAiCore_Add": {
+            "count": 2,
+            "total_us": 3.342
+          },
+          "aclnnDiv_RealDivAiCore_RealDiv": {
+            "count": 2,
+            "total_us": 368.798
+          },
+          "hp_fused": {
+            "count": 20,
+            "total_us": 31655.085
+          },
+          "aclnnInplaceCopy_TransposeAiCore_Transpose": {
+            "count": 10,
+            "total_us": 1122.481
+          },
+          "aclnnInplaceMuls_Muls_Muls": {
+            "count": 30,
+            "total_us": 1629.0399999999997
+          },
+          "aclnnAdd_AddAiCore_Add": {
+            "count": 20,
+            "total_us": 5794.348000000001
+          },
+          "aclnnMatmul_BatchMatMulNd_BatchMatMulV2": {
+            "count": 10,
+            "total_us": 45178.68899999999
+          }
+        }
+      }
+    },
+    "expert": {
+      "cann": {
+        "kernel_count_per_ns": 43.0,
+        "total_kernel_us_per_ns": 6315.179499999999,
+        "elementwise_us_per_ns": 1623.2385000000002,
+        "xxt_us": 1677.2369999999996,
+        "square_us": 698.6419999999999,
+        "rectangular_us": 2022.4450000000002,
+        "groups": {
+          "aclnnLinalgVectorNorm_LpNormV2_LpNormV2": {
+            "count": 2,
+            "total_us": 376.29999999999995
+          },
+          "aclnnAdds_AddAiCore_Add": {
+            "count": 2,
+            "total_us": 2.721
+          },
+          "aclnnDiv_RealDivAiCore_RealDiv": {
+            "count": 2,
+            "total_us": 208.213
+          },
+          "aclnnMatmul_BatchMatMulNd_BatchMatMulV2": {
+            "count": 30,
+            "total_us": 8796.648
+          },
+          "aclnnInplaceMuls_Muls_Muls": {
+            "count": 30,
+            "total_us": 1406.9649999999997
+          },
+          "aclnnAdd_AddAiCore_Add": {
+            "count": 20,
+            "total_us": 1839.512
+          }
+        }
+      },
+      "epilogue": {
+        "kernel_count_per_ns": 33.0,
+        "total_kernel_us_per_ns": 6139.5045,
+        "elementwise_us_per_ns": 1088.7649999999999,
+        "xxt_us": 1308.6390000000001,
+        "square_us": 739.589,
+        "rectangular_us": 2353.0164999999997,
+        "groups": {
+          "aclnnLinalgVectorNorm_LpNormV2_LpNormV2": {
+            "count": 2,
+            "total_us": 387.802
+          },
+          "aclnnAdds_AddAiCore_Add": {
+            "count": 2,
+            "total_us": 3.06
+          },
+          "aclnnDiv_RealDivAiCore_RealDiv": {
+            "count": 2,
+            "total_us": 216.155
+          },
+          "hp_fused": {
+            "count": 20,
+            "total_us": 4096.456
+          },
+          "aclnnInplaceCopy_TransposeAiCore_Transpose": {
+            "count": 10,
+            "total_us": 691.973
+          },
+          "aclnnMatmul_BatchMatMulNd_BatchMatMulV2": {
+            "count": 10,
+            "total_us": 4706.032999999999
+          },
+          "aclnnInplaceMuls_Muls_Muls": {
+            "count": 10,
+            "total_us": 661.248
+          },
+          "aclnnAdd_AddAiCore_Add": {
+            "count": 10,
+            "total_us": 1516.2820000000002
+          }
+        }
+      },
+      "symm": {
+        "kernel_count_per_ns": 48.0,
+        "total_kernel_us_per_ns": 6265.799499999998,
+        "elementwise_us_per_ns": 1647.8709999999994,
+        "xxt_us": 1310.2699999999998,
+        "square_us": 565.13,
+        "rectangular_us": 2115.1595,
+        "groups": {
+          "aclnnLinalgVectorNorm_LpNormV2_LpNormV2": {
+            "count": 2,
+            "total_us": 379.661
+          },
+          "aclnnAdds_AddAiCore_Add": {
+            "count": 2,
+            "total_us": 2.82
+          },
+          "aclnnDiv_RealDivAiCore_RealDiv": {
+            "count": 2,
+            "total_us": 218.33499999999998
+          },
+          "hp_fused": {
+            "count": 20,
+            "total_us": 3750.8
+          },
+          "aclnnInplaceCopy_TransposeAiCore_Transpose": {
+            "count": 10,
+            "total_us": 653.9219999999999
+          },
+          "aclnnInplaceMuls_Muls_Muls": {
+            "count": 30,
+            "total_us": 1340.0720000000006
+          },
+          "aclnnAdd_AddAiCore_Add": {
+            "count": 20,
+            "total_us": 1955.6700000000003
+          },
+          "aclnnMatmul_BatchMatMulNd_BatchMatMulV2": {
+            "count": 10,
+            "total_us": 4230.319
+          }
+        }
+      }
+    }
+  }
+}

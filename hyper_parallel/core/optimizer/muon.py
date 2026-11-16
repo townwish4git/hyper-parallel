@@ -80,6 +80,7 @@ _MUON_ADVANCED_DEFAULTS: Dict[str, Any] = {
     "ns_coefficients": None,
     "ns_epsilon": 1e-10,
     "use_symm_gemm": False,
+    "use_symm_gemm_epilogue": False,
     "zeropower_fn": None,
     "momentum_update_fn": None,
     "reshape_fn": None,
@@ -97,6 +98,7 @@ class _MuonAdvancedOptions:
     ns_coefficients: Optional[Sequence[Tuple[float, float, float]]]
     ns_epsilon: float
     use_symm_gemm: bool
+    use_symm_gemm_epilogue: bool
     zeropower_fn: Optional[Callable[..., torch.Tensor]]
     momentum_update_fn: Optional[Callable[..., torch.Tensor]]
     reshape_fn: Optional[Callable[..., Any]]
@@ -119,6 +121,28 @@ def _resolve_muon_advanced_options(options: Dict[str, Any]) -> _MuonAdvancedOpti
 _TransformNSState = Dict[str, Any]
 
 
+def _validate_ns_gemm_options(use_symm_gemm, use_symm_gemm_epilogue):
+    for name, flag in (("use_symm_gemm", use_symm_gemm), ("use_symm_gemm_epilogue", use_symm_gemm_epilogue)):
+        if not isinstance(flag, bool):
+            raise ValueError(f"{name} must be a bool")
+    if use_symm_gemm_epilogue and not use_symm_gemm:
+        raise ValueError("use_symm_gemm_epilogue requires use_symm_gemm=True")
+
+
+def _ns_polynomial(mat_a, mat_b, coeff_b, coeff_c, use_symm_gemm, use_symm_gemm_epilogue):
+    """Build the square polynomial without overwriting an active GEMM operand."""
+    if use_symm_gemm_epilogue:
+        return symmetric_matmul(mat_a, mat_a, mat_a, alpha=coeff_c, beta=coeff_b, out=mat_b)
+    if use_symm_gemm:
+        symmetric_matmul(mat_a, mat_a, out=mat_b)
+    else:
+        torch.matmul(mat_a, mat_a, out=mat_b)
+    mat_a.mul_(coeff_b)
+    mat_b.mul_(coeff_c)
+    mat_a.add_(mat_b)
+    return mat_a
+
+
 def zeropower_via_newtonschulz5(
         ns_inputs: torch.Tensor,
         steps: int,
@@ -126,11 +150,13 @@ def zeropower_via_newtonschulz5(
         epsilon: float = 1e-10,
         ns_coefficients: Optional[Sequence[Tuple[float, float, float]]] = None,
         use_symm_gemm: bool = False,
+        use_symm_gemm_epilogue: bool = False,
 ) -> torch.Tensor:
     """Run standard NS with optional static symmetric GEMM dispatch.
 
     ``use_symm_gemm`` replaces only the two symmetric products. Coefficient
-    operations retain the original dtype and order. Ascend C is selected only
+    operations retain the original dtype and order unless use_symm_gemm_epilogue
+    is enabled. Ascend C is selected only
     for eligible installed NPU kernels; other inputs use native matmul.
 
     Args:
@@ -140,12 +166,14 @@ def zeropower_via_newtonschulz5(
         epsilon: Normalization stability term.
         ns_coefficients: Explicit coefficient groups for the custom variant.
         use_symm_gemm: Allow static dispatch to Ascend C symmetric products.
+        use_symm_gemm_epilogue: Fuse b*A+c*A@A into the selected Ascend C FP32
+            epilogue. Requires use_symm_gemm. Native fallback keeps separate
+            input-dtype operations. Changes rounding; not bitwise equivalent.
 
     Returns:
         Orthogonalized update with the input shape and dtype.
     """
-    if not isinstance(use_symm_gemm, bool):
-        raise ValueError("use_symm_gemm must be a bool")
+    _validate_ns_gemm_options(use_symm_gemm, use_symm_gemm_epilogue)
     mat_x = ns_inputs
     transposed = ns_inputs.size(-2) > ns_inputs.size(-1)
     if transposed:
@@ -179,14 +207,10 @@ def zeropower_via_newtonschulz5(
     for coeff_a, coeff_b, coeff_c in step_coeffs:
         if use_symm_gemm:
             symmetric_matmul(mat_x, mat_x.mT, out=buf_a)
-            symmetric_matmul(buf_a, buf_a, out=buf_b)
         else:
             torch.matmul(mat_x, mat_x.mT, out=buf_a)
-            torch.matmul(buf_a, buf_a, out=buf_b)
-        buf_a.mul_(coeff_b)
-        buf_b.mul_(coeff_c)
-        buf_a.add_(buf_b)
-        torch.matmul(buf_a, mat_x, out=buf_c)
+        polynomial = _ns_polynomial(buf_a, buf_b, coeff_b, coeff_c, use_symm_gemm, use_symm_gemm_epilogue)
+        torch.matmul(polynomial, mat_x, out=buf_c)
         mat_x.mul_(coeff_a).add_(buf_c)
 
     del buf_a, buf_b, buf_c
@@ -263,6 +287,9 @@ class Muon(BaseDistributedOptimizer):
                 rectangular products and communication remain unchanged. An explicit
                 zeropower_fn overrides this option. For the validated CANN bitwise
                 comparison, set CLOSE_MATMUL_K_SHIFT=1 before process startup.
+            use_symm_gemm_epilogue: Opt into FP32 epilogue for b*A+c*A@A where
+                Ascend C is selected. Requires use_symm_gemm=True. Defaults to
+                False; changes rounding and does not promise bitwise parity.
             zeropower_fn: Optional Newton-Schulz implementation override.
             momentum_update_fn: Optional momentum update implementation override.
             reshape_fn: Optional logical-matrix reshape function.
@@ -273,8 +300,7 @@ class Muon(BaseDistributedOptimizer):
             hsdp_replica_count: Optional optimizer-state replica group size.
         """
         advanced = _resolve_muon_advanced_options(advanced_options)
-        if not isinstance(advanced.use_symm_gemm, bool):
-            raise ValueError("use_symm_gemm must be a bool")
+        _validate_ns_gemm_options(advanced.use_symm_gemm, advanced.use_symm_gemm_epilogue)
         if ns_variant not in ("legacy", "asym5", "custom"):
             raise ValueError(
                 f"ns_variant must be 'legacy', 'asym5', or 'custom', got {ns_variant!r}"
@@ -304,6 +330,7 @@ class Muon(BaseDistributedOptimizer):
             "ns_coefficients": normalized_coefficients,
             "ns_epsilon": advanced.ns_epsilon,
             "use_symm_gemm": advanced.use_symm_gemm,
+            "use_symm_gemm_epilogue": advanced.use_symm_gemm_epilogue,
             "zero_rms_scale_mode": advanced.zero_rms_scale_mode,
             "apply_lr_in_update": advanced.apply_lr_in_update,
         }
@@ -877,6 +904,7 @@ class Muon(BaseDistributedOptimizer):
             ns_coefficients: Optional[Sequence[Tuple[float, float, float]]] = None,
             ns_epsilon: float = 1e-10,
             use_symm_gemm: bool = False,
+            use_symm_gemm_epilogue: bool = False,
     ) -> List[torch.Tensor]:
         """Run batched NS on mixed-shape tensors and restore their original shapes."""
 
@@ -920,6 +948,7 @@ class Muon(BaseDistributedOptimizer):
                 epsilon=ns_epsilon,
                 ns_coefficients=ns_coefficients,
                 use_symm_gemm=use_symm_gemm,
+                use_symm_gemm_epilogue=use_symm_gemm_epilogue,
             )
         else:
             merged_update = self.zeropower_fn(merged_input, steps=ns_steps)
@@ -1021,6 +1050,7 @@ class Muon(BaseDistributedOptimizer):
             updates = self._compute_batched_ns_outputs_for_tensors(
                 tensor_list, group["ns_steps"], group["ns_variant"], group["ns_coefficients"], group["ns_epsilon"],
                 use_symm_gemm=group.get("use_symm_gemm", False),
+                use_symm_gemm_epilogue=group.get("use_symm_gemm_epilogue", False),
             )
             for reshaped_input, update in zip(tensor_list, updates):
                 scale = compute_muon_slice_scale(
@@ -1087,6 +1117,7 @@ class Muon(BaseDistributedOptimizer):
                 ns_coefficients=group["ns_coefficients"],
                 ns_epsilon=group["ns_epsilon"],
                 use_symm_gemm=group.get("use_symm_gemm", False),
+                use_symm_gemm_epilogue=group.get("use_symm_gemm_epilogue", False),
             )
 
             # Scale updates.

@@ -6,7 +6,7 @@
 
 ## 获取与安装
 
-分支只有一个功能提交，包含算子、Python 桥接、Muon 开关、自动构建、测试与文档。
+基础 `feat/muon-symm-gemm` 分支只有一个功能提交，包含算子、Python 桥接、Muon 开关、自动构建、测试与文档。
 同事不需要依赖实验存档分支，也不应只复制 Python 文件。
 
 ```bash
@@ -142,7 +142,7 @@ CLOSE_MATMUL_K_SHIFT=1 OMP_NUM_THREADS=1 python \
 
 每轮 NS 中 `A = X @ X.T`、`B = A @ A` 可使用 Ascend C；后续矩形乘法仍为原生 GEMM。
 对称算子只计算一侧三角并转置写回另一侧。Muon 保留原来的独立 BF16 系数乘法、
-加法和预分配缓冲区布局，不调用通用算子的系数融合 epilogue。
+加法和预分配缓冲区布局；默认不调用通用算子的系数融合 epilogue。
 
 静态选择使用 reshape、合批后的实际输入。对于 `[B,N,K] @ [B,K,N]`，
 当原生库已安装、输入为 NPU FP16/BF16、`N > 256`，且
@@ -160,3 +160,35 @@ BF16 参数/梯度/动量、五轮 asym5、关闭 K-shift。使用真实模型�
 本版本定位为 eager `optimizer.step()`；将其放在模型编译区域之外。
 模型前后向的编译不要求编译 optimizer step。该 ctypes 原生算子的完整图编译、
 graph capture 和 replay 未验证，不应把这部分也包进 full-graph 编译。
+
+## 可选的 FP32 多项式 epilogue
+
+`feat/muon-symm-epilogue` 在上述基础特性上新增独立开关，默认关闭。
+该增量提交依赖前述基础特性，不能单独 cherry-pick 到 master：
+
+```python
+optimizer = Muon(
+    muon_parameters,
+    use_symm_gemm=True,
+    use_symm_gemm_epilogue=True,
+)
+```
+
+混合优化器的 Muon 配置也支持 `muon_use_symm_gemm_epilogue: true`。
+两个配置项都必须为 bool；开启 epilogue 必须同时开启 `use_symm_gemm`。
+它们均保存在参数组和 checkpoint 中；恢复后若要启用，应显式设置两个参数组开关。
+显式 `zeropower_fn` 回调仍优先。
+
+该开关只将第二次对称乘法及其后的三次逐元素操作，改为直接生成
+`P = BF16(c * GEMM_FP32(A, A) + b * FP32(A))`。
+输出复用另一个方形缓冲区，不覆盖仍在读取的 A；后续矩形乘法读取 P。
+第一次 `X @ X.T`、矩形乘法、最终 `a*X + P@X`、动量及通信保持原路径。
+
+Ascend C 仍按原有静态规则选择。未满足条件时使用原生 matmul 和独立输入精度的
+缩放、加法；并非所有矩阵都执行 FP32 融合。原生库和构建方式没有变化。
+开启 epilogue 会改变舍入点，即使关闭 K-shift，也不再保证与原版逐 bit 一致。
+本实现使用 FP32 GM scratch，减少独立算子调用不代表必然更快。
+
+在前面的完整模型基准命令中加入 `--include-epilogue`，即可同时测量原生 CANN、
+symm GEMM 和 symm GEMM + epilogue。完整实验口径和结果见
+[FP32 epilogue 验证报告](../performance/muon_symm_epilogue/README.md)。

@@ -204,3 +204,7 @@ training schedule. Resume with the same optimizer partition and head layout.
 如需复现实测中与原生 CANN 的逐 bit 对齐结果，应在启动所有 worker 前设置
 `CLOSE_MATMUL_K_SHIFT=1`。安装、训练开关、checkpoint 恢复和验证范围见
 [完整使用指南](muon_symm_gemm.zh.md)。
+
+另可设置 `use_symm_gemm_epilogue=True`，在选中 Ascend C 的方形多项式上进行
+FP32 融合。它要求同时开启 `use_symm_gemm`，默认关闭，并会改变舍入语义。
+性能与精度差异见 [epilogue 验证报告](../performance/muon_symm_epilogue/README.md)。

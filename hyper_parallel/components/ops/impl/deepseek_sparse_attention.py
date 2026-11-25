@@ -65,6 +65,22 @@ DSA_ABSORBED_SINK = OpSpec[PackedDeepseekSparseAttentionFn](
 )
 
 
+def _dense_absorbed_scores(
+    query: torch.Tensor, key: torch.Tensor, query_rope: torch.Tensor, key_rope: torch.Tensor,
+    indices: torch.Tensor, causal_end: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Score the shared bank once per chunk and count each selected occurrence."""
+    key_length, kv_heads, _ = key.shape
+    indices = indices.expand(-1, kv_heads, -1)
+    valid = (indices >= 0) & (indices < key_length) & (indices <= causal_end[:, None, None])
+    positions = indices.clamp(0, key_length - 1).long()
+    counts = indices.new_zeros((indices.shape[0], kv_heads, key_length))
+    counts.scatter_add_(-1, positions, valid.to(counts.dtype))
+    scores = torch.einsum("tngd,knd->tngk", query.unflatten(1, (kv_heads, -1)), key)
+    scores = scores + torch.einsum("tngd,knd->tngk", query_rope.unflatten(1, (kv_heads, -1)), key_rope)
+    return scores, counts.unsqueeze(2)
+
+
 def _native_absorbed(
     x: torch.Tensor, key: torch.Tensor, query_rope: torch.Tensor, key_rope: torch.Tensor,
     topk_indices: torch.Tensor, scale: float, query_ends: torch.Tensor, key_ends: torch.Tensor,
@@ -81,19 +97,34 @@ def _native_absorbed(
                 end = min(start + 32, qe)
                 indices = topk_indices[start:end]
                 causal = torch.arange(start, end, device=x.device) - qe + ke - ks
-                selected, valid = selected_packed_keys(value[ks:ke], indices, causal_end=causal)
-                rotary_keys, _ = selected_packed_keys(k_rope[ks:ke], indices, causal_end=causal)
-                scores = (selected_packed_scores(query[start:end], selected)
-                          + selected_packed_scores(q_rope[start:end], rotary_keys)) * scale
-                scores = scores.masked_fill(~valid.unsqueeze(2), -torch.inf)
+                counts = None
+                if sink_key is None and 0 < ke - ks <= indices.shape[-1]:
+                    # When the bank is narrower than the selection, gathering
+                    # K/V per query retains more data for backward than scoring the bank.
+                    scores, counts = _dense_absorbed_scores(
+                        query[start:end], value[ks:ke], q_rope[start:end], k_rope[ks:ke], indices, causal,
+                    )
+                    valid = counts > 0
+                else:
+                    selected, valid_slots = selected_packed_keys(value[ks:ke], indices, causal_end=causal)
+                    rotary_keys, _ = selected_packed_keys(k_rope[ks:ke], indices, causal_end=causal)
+                    scores = (selected_packed_scores(query[start:end], selected)
+                              + selected_packed_scores(q_rope[start:end], rotary_keys))
+                    valid = valid_slots.unsqueeze(2)
+                scores = (scores * scale).masked_fill(~valid, -torch.inf)
                 maximum = scores.amax(dim=-1, keepdim=True)
                 maximum = torch.where(maximum.isfinite(), maximum, 0.0)
                 exp = (scores - maximum).exp()
+                if counts is not None:
+                    exp = exp * counts
                 total = exp.sum(dim=-1, keepdim=True)
                 if sink_key is None:
                     probabilities = exp / total.clamp_min(torch.finfo(torch.float32).tiny)
-                    output = torch.einsum("tngk,tnkd->tngd", probabilities, selected.float()).flatten(1, 2)
-                    output = F.pad(output, (0, q_rope.shape[-1]))
+                    if counts is None:
+                        output = torch.einsum("tngk,tnkd->tngd", probabilities, selected)
+                    else:
+                        output = torch.einsum("tngk,knd->tngd", probabilities, value[ks:ke])
+                    output = F.pad(output.flatten(1, 2), (0, q_rope.shape[-1]))
                 else:
                     output = _parameter_sink(
                         query[start:end], q_rope[start:end], selected, scores, sink_key, sink_value,

@@ -27,6 +27,15 @@ With a compatible Triton-Ascend and torch-npu installation, set
 products in every built-in Newton–Schulz iteration. The default is
 `use_kernel=False`. A custom `zeropower_fn` controls its own products.
 
+For BF16 Muon under `no_grad`, Triton-Ascend 3.6 can enqueue the Gram and
+square kernels together through torch-npu. On first use, each machine builds
+a small host extension with a C++20 compiler (`CXX`, default `c++`), the
+installed torch/torch-npu headers and the CANN installation selected by
+`ASCEND_HOME_PATH`. Ranks share the build in `TRITON_CACHE_DIR`. The two
+device binaries, their tiling and their execution order are unchanged. FP16,
+empty inputs, disabled task queues and unsupported host launchers use the
+individual Triton launches. `use_kernel=False` uses native PyTorch.
+
 The GEMM computes the lower triangular tiles and writes each off-diagonal
 tile and its transpose from the same rounded result. Muon writes each diagonal tile directly from GEMM in the same launch.
 The standalone function defaults to an additional mirror within diagonal tiles for

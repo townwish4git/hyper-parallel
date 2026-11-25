@@ -15,11 +15,13 @@
 """NPU worker checks for full symmetric output from a triangular Triton GEMM."""
 
 from typing import Optional
+from unittest.mock import patch
 
 import torch
 import torch_npu
 
 from hyper_parallel.components.functional import symmetric_matmul
+from hyper_parallel.core.optimizer import muon
 
 
 def _bits(value: torch.Tensor) -> torch.Tensor:
@@ -115,3 +117,21 @@ def test_symmetric_matmul_streams_and_graph() -> None:
     torch.testing.assert_close(captured_bits, captured_bits.mT, rtol=0, atol=0)
     reference = value @ value.mT
     torch.testing.assert_close(captured.cpu().float(), reference.cpu().float(), rtol=1e-2, atol=1e-5)
+
+
+@torch.no_grad()
+def test_muon_paired_dispatch() -> None:
+    """Compare complete NS updates on a side stream for two layouts and coefficient schedules."""
+    torch_npu.npu.set_device(0)
+    torch.manual_seed(453)
+    stream = torch_npu.npu.Stream()
+    for shape, variant in (((2, 65, 129), "asym5"), ((129, 65), "legacy")):
+        value = torch.randn(shape, device="npu", dtype=torch.bfloat16)
+        with patch.object(muon, "try_paired_iteration", return_value=False):
+            reference = muon.zeropower_via_newtonschulz5(value, 5, ns_variant=variant, use_kernel=True)
+        stream.wait_stream(torch_npu.npu.current_stream())
+        with torch_npu.npu.stream(stream), patch.object(muon, "symmetric_matmul",
+                                                        side_effect=AssertionError("Expected paired dispatch")):
+            actual = muon.zeropower_via_newtonschulz5(value, 5, ns_variant=variant, use_kernel=True)
+        torch_npu.npu.current_stream().wait_stream(stream)
+        torch.testing.assert_close(_bits(actual), _bits(reference), rtol=0, atol=0)

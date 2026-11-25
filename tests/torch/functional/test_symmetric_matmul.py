@@ -15,6 +15,7 @@
 """Single-card launchers for the Triton symmetric matrix product."""
 
 import os
+from importlib.metadata import PackageNotFoundError, version
 from importlib.util import find_spec
 from pathlib import Path
 from unittest.mock import patch
@@ -62,3 +63,18 @@ def test_symmetric_matmul_streams_and_graph() -> None:
     """Check current-stream execution, temporary lifetimes and graph replay."""
     with patch.dict(os.environ, {"CLOSE_MATMUL_K_SHIFT": "1"}):
         torchrun_case(_WORKER, "test_symmetric_matmul_streams_and_graph", num_proc=1)
+
+
+@arg_mark(plat_marks=["platform_ascend", "platform_ascend910b"], level_mark="level0",
+          card_mark="onecard", essential_mark="essential")
+def test_muon_paired_dispatch() -> None:
+    """Check the paired torch-npu queue path of the optional Triton-Ascend 3.6 backend."""
+    try:
+        release = version("triton-ascend")
+    except PackageNotFoundError:
+        pytest.skip("requires Triton-Ascend")
+    if release.split(".")[:2] != ["3", "6"]:
+        pytest.skip("requires the Triton-Ascend 3.6 launcher ABI")
+    settings = {"CLOSE_MATMUL_K_SHIFT": "1", "TASK_QUEUE_ENABLE": "1", "TRITON_ENABLE_TASKQUEUE": "1"}
+    with patch.dict(os.environ, settings):
+        torchrun_case(_WORKER, "test_muon_paired_dispatch", num_proc=1)

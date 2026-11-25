@@ -27,6 +27,7 @@ import torch
 import torch.distributed as dist
 
 from hyper_parallel.components.functional._symmetric_matmul import symmetric_matmul
+from hyper_parallel.components.functional._triton.muon_host import try_paired_iteration
 from hyper_parallel.high_availability.group_registry import is_recovery_bootstrapping
 from hyper_parallel.core.optimizer.optimizer import AsyncReplicateBroadcaster, BaseDistributedOptimizer
 from hyper_parallel.core.optimizer.dtensor_compat import to_local_if_dtensor
@@ -177,6 +178,9 @@ def zeropower_via_newtonschulz5(
     buf_c = torch.empty(mat_x.shape, dtype=mat_x.dtype, device=mat_x.device)
 
     step_coeffs = _resolve_ns_coefficients(steps, ns_variant, ns_coefficients)
+    if use_kernel and try_paired_iteration(mat_x, buf_a, buf_b, buf_c, step_coeffs):
+        return mat_x.mT if transposed else mat_x
+
     symmetric_product = partial(symmetric_matmul, mirror_diagonal=False) if use_kernel else torch.matmul
 
     for coeff_a, coeff_b, coeff_c in step_coeffs:

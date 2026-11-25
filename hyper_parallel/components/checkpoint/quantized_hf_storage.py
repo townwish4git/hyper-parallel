@@ -283,8 +283,10 @@ class QuantizedHuggingFaceStorageReader(HuggingFaceStorageReader):
             padded = torch.zeros(padded_shape, dtype=weight.dtype)
             padded[:weight.shape[0], :weight.shape[1]].copy_(weight)
             weight = padded
+        # Transformers changed the standalone weight key from the anchored
+        # pattern to the literal name. Both keys refer to the same block.
         value = self._dequantizer.convert(
-            {"weight$": weight, "weight_scale_inv": scale},
+            {"weight$": [weight], "weight": [weight], "weight_scale_inv": [scale]},
             full_layer_name="weight", model=self._dtype_target,
         )["weight"][:stop - start, :right - left]
         if value.shape != (stop - start, right - left) or value.dtype != torch.bfloat16:

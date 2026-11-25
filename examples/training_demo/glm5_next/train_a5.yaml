@@ -1,0 +1,121 @@
+model:
+  _target_: hyper_parallel.models.glm5_next.adapter.build.build_glm5_next
+  config_path: examples/training_demo/glm5_next/config_a5.json
+  indexer_mode: sparse
+  mtp_weight: 0.1
+  kpool_weight: 0.01
+  trust_remote_code: false
+
+model_init_dtype: float32
+
+training:
+  train_iters: 12
+  eval_iters: 0
+  global_batch_size: 4
+  micro_batch_size: 1
+  backend: hccl
+  init_device: meta
+  max_grad_norm: 1.0
+  seed: 42
+  enable_full_determinism: true
+
+accelerator:
+  tp_size: 1
+  cp_size: 1
+  ep_size: 1
+  pp_size: 1
+  sequence_parallel: false
+
+fsdp_config:
+  dp_shard_size: 1
+  edp_shard_size: 1
+  mix_precision:
+    param_dtype: bfloat16
+    reduce_dtype: float32
+    cast_forward_inputs: false
+    custom_params:
+      "model.language_model.layers.*.self_attn.conv1d.weight": {param_dtype: float32}
+      "model.language_model.layers.*.self_attn.forget_gate.A_log": {param_dtype: float32}
+      "model.language_model.layers.*.self_attn.forget_gate.dt_bias": {param_dtype: float32}
+      "model.language_model.layers.*.*_hc.fn": {param_dtype: float32}
+      "model.language_model.layers.*.*_hc.base": {param_dtype: float32}
+      "model.language_model.layers.*.*_hc.scale": {param_dtype: float32}
+
+ops:
+  deepseek_sparse_attention: native
+  dsa_indexer: native
+
+plan_overrides:
+  - match: "model.visual.blocks.*.attn"
+    replace:
+      kind: module
+      implementation: hyper_parallel.models.glm5_next.adapter.replacements.replace_vision
+  - match:
+      - "model.language_model.layers.*.attn_hc"
+      - "model.language_model.layers.*.ffn_hc"
+    replace:
+      kind: module
+      implementation: hyper_parallel.models.glm5_next.adapter.replacements.replace_mhc
+  - match:
+      - "model.language_model.layers.[012].mlp"
+      - "model.language_model.layers.*.mlp.shared_experts"
+    replace:
+      kind: module
+      implementation: hyper_parallel.models.glm5_next.adapter.replacements.replace_ffn
+  - match: "model.language_model.layers.*.mlp.experts"
+    replace:
+      kind: module
+      implementation: hyper_parallel.components.modules.GroupedExperts
+
+dataset:
+  _target_: hyper_parallel.models.glm5_next.adapter.replay.build_replay_dataset
+  data_path: /path/to/local/replay.safetensors
+  training_mode: sft
+  model_assets:
+    _target_: hyper_parallel.models.glm5_next.adapter.replay.build_replay_assets
+    pretrained_model_name_or_path: /path/to/local/GLM-5.3-Flash
+  data_transform:
+    _target_: hyper_parallel.models.glm5_next.adapter.replay.Glm5NextReplayTransform
+    max_seq_len: 2048
+  data_config: {}
+
+dataloader:
+  _target_: hyper_parallel.data.batching.FixedBatchDataLoader
+  get_batch:
+    _target_: hyper_parallel.models.glm5_next.adapter.data.Glm5NextBatch
+  collate_fn:
+    _target_: hyper_parallel.data.batching.build_omni_collate_fn
+  sampler_type: single
+  drop_last: true
+  num_workers: 0
+  pin_memory: false
+  use_background_prefetcher: false
+
+optimizer:
+  _target_: hyper_parallel.components.optim.builders.AdamW
+  fp32_main_params: true
+  adamw_config:
+    adamw_lr: 1.0e-5
+    adamw_weight_decay: 0.01
+    adamw_betas: [0.9, 0.999]
+    adamw_eps: 1.0e-8
+
+lr_scheduler:
+  _target_: hyper_parallel.components.optim.lr_scheduler.MultiLRScheduler
+  lr_decay_style: cosine
+  lr_config:
+    lr_warmup_steps: 1
+    min_lr: 0.0
+
+checkpoint:
+  checkpoint_dir: ./output/training_demo/glm5_next/checkpoints
+  save_ckpt: true
+  save_steps: 0
+  save_epochs: 0
+  save_consolidated: none
+  save_optimizer: true
+  save_train_state: true
+  save_extra_state_per_rank: true
+  restore_optimizer: true
+  restore_train_state: true
+  restore_dataloader_state: true

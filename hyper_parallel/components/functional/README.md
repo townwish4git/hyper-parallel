@@ -20,6 +20,23 @@ query, key = apply_rotary_pos_emb(query, key, cos, sin)
 Use `apply_rotary_pos_emb_interleave` for Transformers models whose source
 attention calls the interleaved variant.
 
+## Muon symmetric GEMM on Ascend
+
+With a compatible Triton-Ascend and torch-npu installation, set
+`Muon(parameters, use_kernel=True)` to use Triton for both symmetric
+products in every built-in Newton–Schulz iteration. The default is
+`use_kernel=False`. A custom `zeropower_fn` controls its own products.
+
+The GEMM computes the lower triangular tiles and writes each off-diagonal
+tile and its transpose from the same rounded result. Muon writes each diagonal tile directly from GEMM in the same launch.
+The standalone function defaults to an additional mirror within diagonal tiles for
+bitwise symmetry. Both paths use static tilings and the current NPU stream.
+
+`hyper_parallel.components.functional.symmetric_matmul(a, b, out=out)`
+accepts FP16 or BF16 matrices, optionally batched, including dense transposed
+views. The caller guarantees that the product is symmetric. Muon supplies
+`X @ X.mT` and the square of the resulting symmetric matrix.
+
 ## MoE functions
 
 The reusable MoE interfaces include:

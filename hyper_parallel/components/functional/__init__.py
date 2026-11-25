@@ -28,6 +28,7 @@ import importlib
 from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from hyper_parallel.components.functional._symmetric_matmul import symmetric_matmul
     from hyper_parallel.components.functional.swiglu import swiglu
 
 _EXPORT_TO_MODULE = {
@@ -64,6 +65,7 @@ _EXPORT_TO_MODULE = {
     "situ": "activation_situ",
     "situ_packed": "activation_situ",
     "swiglu": "swiglu",
+    "symmetric_matmul": "_symmetric_matmul",
 }
 
 
@@ -116,4 +118,5 @@ __all__ = [
     "situ",
     "situ_packed",
     "swiglu",
+    "symmetric_matmul",
 ]

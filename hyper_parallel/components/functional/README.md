@@ -20,6 +20,43 @@ query, key = apply_rotary_pos_emb(query, key, cos, sin)
 Use `apply_rotary_pos_emb_interleave` for Transformers models whose source
 attention calls the interleaved variant.
 
+## Ascend C symmetric GEMM
+
+`symmetric_gemm_mirror.out` computes a symmetric product such as `x @ x.mT`
+or the square of a symmetric matrix. It accepts 2D matrices or 3D batches in
+plain NPU storage, with a contiguous, non-aliasing output. All tensors must
+share the same FP16 or BF16 dtype and device. The operator is forward-only.
+
+With the target CANN environment sourced and HyperParallel installed in
+editable mode, build the extension using the same Python environment that
+will run it. The build requires CMake and a C++20 compiler.
+
+```bash
+python -m hyper_parallel.components.functional._ascendc.symmetric_matmul.build \
+    --soc Ascend910B3 --build-dir /tmp/hp-symm-build-910b
+```
+
+Use `Ascend950DT_9582` for that SoC. Build each SoC in a separate checkout
+because the build installs both shared libraries beside the Python loader.
+
+```python
+import torch
+import torch_npu
+
+from hyper_parallel.components.functional._ascendc.symmetric_matmul import ascendc_symmetric_gemm_out
+
+x = torch.randn(512, 1024, dtype=torch.bfloat16, device="npu")
+out = torch.empty(512, 512, dtype=x.dtype, device=x.device)
+symmetric_gemm_out = ascendc_symmetric_gemm_out()
+symmetric_gemm_out(x, x.mT, out=out)
+```
+
+The dispatcher submits one mixed Cube/Vector GEMM kernel on the current NPU
+stream. Cube produces lower-triangular tiles while Vector mirrors completed
+tiles and makes the result bitwise symmetric. Two sets of cross-core flags
+allow Cube to advance to the next tile while Vector consumes the previous
+one. Tail padding or an unaligned output can require extra Torch operations.
+
 ## MoE functions
 
 The reusable MoE interfaces include:

@@ -51,11 +51,15 @@ symmetric_gemm_out = ascendc_symmetric_gemm_out()
 symmetric_gemm_out(x, x.mT, out=out)
 ```
 
-The dispatcher submits one mixed Cube/Vector GEMM kernel on the current NPU
-stream. Cube produces lower-triangular tiles while Vector mirrors completed
-tiles and makes the result bitwise symmetric. Two sets of cross-core flags
-allow Cube to advance to the next tile while Vector consumes the previous
-one. Tail padding or an unaligned output can require extra Torch operations.
+The dispatcher submits one GEMM kernel on the current NPU stream. Cube
+computes the lower triangle by macro tiles and writes each diagonal macro
+tile in full. The two halves within a diagonal tile retain their computed
+values, including any rounding differences.
+
+On Ascend 950, Fixpipe writes each off-diagonal tile and its transpose
+directly from the same L0C accumulator using the same rounding. On Ascend
+910B, Vector mirrors off-diagonal tiles while Cube advances to the next
+tile. Tail padding or an unaligned output can require extra Torch operations.
 
 ## MoE functions
 

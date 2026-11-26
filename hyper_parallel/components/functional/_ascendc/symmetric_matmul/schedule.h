@@ -34,6 +34,10 @@ struct TaskRegion {
   int batch, row, col, rows, columns;
 };
 
+__aicore__ inline bool is_off_diagonal(const TaskRegion &region) {
+  return region.row != region.col;
+}
+
 __aicore__ inline int task_count(const SymmetricPlan &plan) {
   int tiles = (plan.n + plan.tile - 1) / plan.tile;
   return plan.batch * tiles * (tiles + 1) / 2;

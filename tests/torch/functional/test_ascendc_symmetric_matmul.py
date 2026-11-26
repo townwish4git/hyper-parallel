@@ -35,7 +35,7 @@ def test_ascendc_symmetric_matmul() -> None:
     """Feature: Ascend C symmetric GEMM.
 
     Description: Execute Gram and square on a non-default NPU stream.
-    Expectation: Results match native matmul, mirrors agree bitwise and guards remain intact.
+    Expectation: Results match native matmul, off-diagonal mirrors agree bitwise and guards remain intact.
     """
     worker = str(Path(__file__).with_name("_test_ascendc_symmetric_matmul.py"))
     with patch.dict(os.environ, {"CLOSE_MATMUL_K_SHIFT": "1", "TASK_QUEUE_ENABLE": "1"}):

@@ -13,12 +13,48 @@
 #include "symmetric_matmul/params.h"
 #include "symmetric_matmul/schedule.h"
 
+#if defined(__NPU_ARCH__) && __NPU_ARCH__ == 3510
+template <class T>
+__aicore__ inline void dual_store(const __gm__ void *address, const LocalTensor<int8_t> &acc,
+                                  const void *params, const uint64_t, const uint64_t batch_base) {
+  const auto &copy = *static_cast<const DataCopyOutParams *>(params);
+  auto height = static_cast<uint16_t>(copy.burstLen / 2);
+  auto quant = IsSameType<T, half>::value ? QuantMode_t::F322F16 : QuantMode_t::F322BF16;
+  auto ptr = reinterpret_cast<__gm__ T *>(const_cast<__gm__ void *>(address));
+  GlobalTensor<T> dst;
+  dst.SetGlobalBuffer(ptr);
+  FixpipeParamsC310<CO2Layout::ROW_MAJOR> lower(copy.oriNSize, height, height, copy.dstStride);
+  lower.quantPre = quant;
+  Fixpipe<T, float, CFG_ROW_MAJOR>(dst, acc.ReinterpretCast<float>(), lower);
+  if (batch_base != 0) {
+    auto base = reinterpret_cast<__gm__ T *>(batch_base);
+    int64_t offset = ptr - base;
+    dst.SetGlobalBuffer(base + (offset % copy.dstStride) * copy.dstStride + offset / copy.dstStride);
+    FixpipeParamsC310<CO2Layout::COLUMN_MAJOR> upper(copy.oriNSize, height, height, copy.dstStride);
+    upper.params.srcNzC0Stride = 1;
+    upper.quantPre = quant;
+    Fixpipe<T, float, CFG_COLUMN_MAJOR>(dst, acc.ReinterpretCast<float>(), upper);
+  }
+}
+
+constexpr auto dual_store_config = []() {
+  auto config = CFG_MDL;
+  config.enUnitFlag = false;
+  return config;
+}();
+#endif
+
 template <bool TransA, bool TransB, class Matmul, class T, class Output>
 __aicore__ inline void produce_region(Matmul &mm, GlobalTensor<T> &a, GlobalTensor<T> &b, GlobalTensor<Output> &out,
                                       const SymmetricPlan &plan, const TaskRegion &region) {
   if (region.rows == 0) return;
   int64_t input_batch = static_cast<int64_t>(region.batch) * plan.n * plan.k;
   int64_t output_batch = static_cast<int64_t>(region.batch) * plan.n * plan.n;
+#if defined(__NPU_ARCH__) && __NPU_ARCH__ == 3510
+  // Matmul can subdivide a macro tile. The batch base lets Fixpipe transpose
+  // writes from any sub-tile of an off-diagonal macro tile.
+  mm.SetSelfDefineData(is_off_diagonal(region) ? reinterpret_cast<uint64_t>(out[output_batch].GetPhyAddr()) : 0UL);
+#endif
   mm.SetSingleShape(region.rows, region.columns, plan.k);
   mm.SetTensorA(a[input_batch + (TransA ? region.row : region.row * plan.k)], TransA);
   mm.SetTensorB(b[input_batch + (TransB ? region.col * plan.k : region.col)], TransB);
@@ -27,7 +63,7 @@ __aicore__ inline void produce_region(Matmul &mm, GlobalTensor<T> &a, GlobalTens
 }
 
 template <class T, bool TransA, bool TransB>
-__aicore__ inline void product(GM_ADDR a, GM_ADDR b, GM_ADDR scratch, SymmetricPlan &plan) {
+__aicore__ inline void product(GM_ADDR a, GM_ADDR b, GM_ADDR out, SymmetricPlan &plan) {
   if ASCEND_IS_AIV {
     return;
   }
@@ -35,7 +71,11 @@ __aicore__ inline void product(GM_ADDR a, GM_ADDR b, GM_ADDR scratch, SymmetricP
   using Left = matmul::MatmulType<TPosition::GM, CubeFormat::ND, T, TransA>;         // codespell:ignore nd
   using Right = matmul::MatmulType<TPosition::GM, CubeFormat::ND, T, TransB>;  // codespell:ignore nd
   using Result = matmul::MatmulType<TPosition::GM, CubeFormat::ND, T>;  // codespell:ignore nd
+#if defined(__NPU_ARCH__) && __NPU_ARCH__ == 3510
+  matmul::MatmulImpl<Left, Right, Result, Result, dual_store_config, MatmulCallBackFunc<dual_store<T>>> mm;
+#else
   matmul::MatmulImpl<Left, Right, Result, Result, CFG_MDL> mm;
+#endif
   TCubeTiling tiling;
   auto *words = reinterpret_cast<uint32_t *>(&tiling);
   for (int i = 0; i < sizeof(tiling) / sizeof(uint32_t); ++i) words[i] = plan.tiling[i];
@@ -45,16 +85,27 @@ __aicore__ inline void product(GM_ADDR a, GM_ADDR b, GM_ADDR scratch, SymmetricP
   GlobalTensor<T> gc;
   ga.SetGlobalBuffer(reinterpret_cast<__gm__ T *>(a));
   gb.SetGlobalBuffer(reinterpret_cast<__gm__ T *>(b));
-  gc.SetGlobalBuffer(reinterpret_cast<__gm__ T *>(scratch));
+  gc.SetGlobalBuffer(reinterpret_cast<__gm__ T *>(out));
   int tasks = task_count(plan);
-  // Two ready/consumed slots bound producer lead and prevent flag reuse before
-  // both AIVs finish. GM-only MatmulImpl does not use the KFC synchronization path.
+#if !defined(__NPU_ARCH__) || __NPU_ARCH__ != 3510
+  // Each ready/consumed slot is reused only after both AIVs finish mirroring.
   int iteration = 0;
-  for (int task = GetBlockIdx(); task < tasks; task += GetBlockNum(), ++iteration) {
-    if (iteration >= 2) CrossCoreWaitFlag<0x2>(8 + iteration % 2);
+#endif
+  for (int task = GetBlockIdx(); task < tasks; task += GetBlockNum()) {
     auto region = task_region(plan, task);
+#if !defined(__NPU_ARCH__) || __NPU_ARCH__ != 3510
+    const bool mirror = is_off_diagonal(region);
+    if (mirror && iteration >= 2) CrossCoreWaitFlag<0x2>(8 + iteration % 2);
+#endif
     produce_region<TransA, TransB>(mm, ga, gb, gc, plan, region);
-    CrossCoreSetFlag<0x2, PIPE_FIX>(6 + iteration % 2);
+#if !defined(__NPU_ARCH__) || __NPU_ARCH__ != 3510
+    if (mirror) {
+      CrossCoreSetFlag<0x2, PIPE_FIX>(6 + iteration % 2);
+      ++iteration;
+    }
+#endif
   }
+#if !defined(__NPU_ARCH__) || __NPU_ARCH__ != 3510
   for (int slot = 0; slot < 2 && slot < iteration; ++slot) CrossCoreWaitFlag<0x2>(8 + slot);
+#endif
 }

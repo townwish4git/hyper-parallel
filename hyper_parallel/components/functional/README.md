@@ -27,17 +27,19 @@ or the square of a symmetric matrix. It accepts 2D matrices or 3D batches in
 plain NPU storage, with a contiguous, non-aliasing output. All tensors must
 share the same FP16 or BF16 dtype and device. The operator is forward-only.
 
-With the target CANN environment sourced and HyperParallel installed in
-editable mode, build the extension using the same Python environment that
-will run it. The build requires CMake and a C++20 compiler.
+Source the target CANN `set_env.sh` and use a Python environment with matching
+`torch` and `torch_npu` packages installed. CMake and a C++20 compiler are required.
+In this environment, `pip install -e .` builds the two shared libraries next to
+the Python loader. `pip wheel .` and `bash build.sh` build them into the wheel,
+which can be installed on a machine with the matching SoC, CANN, and Torch stack.
 
-```bash
-python -m hyper_parallel.components.functional._ascendc.symmetric_matmul.build \
-    --soc Ascend910B3 --build-dir /tmp/hp-symm-build-910b
-```
-
-Use `Ascend950DT_9582` for that SoC. Build each SoC in a separate checkout
-because the build installs both shared libraries beside the Python loader.
+The build detects the SoC from the first visible NPU. Set
+`HYPER_PARALLEL_ASCEND_SOC` to build for a specific SoC or on a host without a
+visible NPU. Example targets are `Ascend910B3` and `Ascend950DT_9582`. Use a
+separate checkout for each SoC when installing editably. Automatic builds without
+a configured CANN environment, an installed Torch NPU stack, or a visible NPU
+produce the base package. Setting the SoC explicitly requires the build stack
+and allows compiling without a visible NPU.
 
 ```python
 import torch

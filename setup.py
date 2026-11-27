@@ -21,12 +21,18 @@ import stat
 import platform
 import subprocess
 from importlib import import_module
-from setuptools import setup, find_packages, find_namespace_packages, Distribution
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+from setuptools import setup, find_packages, find_namespace_packages, Distribution, Extension
+from setuptools.command.build_ext import build_ext
 from setuptools.command.egg_info import egg_info
 from setuptools.command.build_py import build_py
 from setuptools.command.install import install
 
 ROOT_DIR = os.path.dirname(__file__)
+SYMM_GEMM_PACKAGE = "hyper_parallel.components.functional._ascendc.symmetric_matmul"
+SYMM_GEMM_LIBRARIES = ("libhp_pipeline_kernel", "libhp_symm_torch")
 logger = logging.getLogger(__name__)
 
 TORCH26_REQUIRES = [
@@ -196,6 +202,42 @@ class BuildPy(build_py):
         update_permissions(target_lib_dir)
 
 
+class BuildExt(build_ext):
+    """Build the Ascend C libraries through the component's CMake entry point."""
+
+    def get_ext_filename(self, fullname: str) -> str:
+        """Keep the shared library names expected by the operator loader.
+
+        Args:
+            fullname: Qualified extension name or its final component.
+
+        Returns:
+            The extension filename, including package directories for qualified names.
+        """
+        parts = fullname.split(".")
+        if parts[-1] in SYMM_GEMM_LIBRARIES:
+            parts[-1] += ".so"
+            return os.path.join(*parts)
+        return super().get_ext_filename(fullname)
+
+    def build_extensions(self) -> None:
+        """Place both artifacts in the standard wheel or editable build directory."""
+        source = Path(ROOT_DIR).joinpath(*SYMM_GEMM_PACKAGE.split("."))
+        destination = Path(self.get_ext_fullpath(f"{SYMM_GEMM_PACKAGE}.libhp_symm_torch")).resolve().parent
+        # Pip isolates its build backend through PYTHONPATH. CMake must instead
+        # link against the Torch and torch-npu installed in the target interpreter.
+        with TemporaryDirectory(prefix="hp-symm-build-") as build_dir:
+            staging = Path(build_dir) / "runtime"
+            subprocess.run([sys.executable, "-E", str(source / "build.py"), "--optional",
+                            "--build-dir", build_dir, "--install-dir", str(staging)], check=True)
+            if not staging.is_dir():
+                self.extensions = []
+                return
+            destination.mkdir(parents=True, exist_ok=True)
+            for name in SYMM_GEMM_LIBRARIES:
+                shutil.copy2(staging / f"{name}.so", destination)
+
+
 class Install(install):
     """Install."""
 
@@ -228,6 +270,7 @@ if __name__ == '__main__':
     _cmdclass = {
         'egg_info': EggInfo,
         'build_py': BuildPy,
+        'build_ext': BuildExt,
         'install': Install,
     }
     setup(
@@ -272,6 +315,8 @@ if __name__ == '__main__':
                 'mapping.yaml',
             ],
         },
+        ext_modules=[Extension(f"{SYMM_GEMM_PACKAGE}.{name}", sources=[]) for name in SYMM_GEMM_LIBRARIES]
+        if os.environ.get("ASCEND_HOME_PATH") or os.environ.get("HYPER_PARALLEL_ASCEND_SOC") else [],
         cmdclass=_cmdclass,
         distclass=BinaryDistribution,
         python_requires='>=3.10,<3.13',

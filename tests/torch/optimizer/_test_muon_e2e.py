@@ -387,6 +387,40 @@ def _assert_overlap_trajectory(mesh, group_count, replica_count=None, **callback
     assert used_pipeline == (group_count > 1), f"unexpected pipeline={used_pipeline} for {group_count} groups"
 
 
+def _assert_pipeline_buffer_stream(mesh):
+    """Verify allocation ownership and parameter updates on a non-default caller stream."""
+    caller = torch.npu.current_stream()
+    model, optimizer = _make_overlap_optimizer(mesh, 4, True, None)
+    _assign_gradients(model, _full_grads(0, model))
+
+    def check_operands(collective):
+        def checked(*tensors, **kwargs):
+            segments = [s for s in torch.npu.memory_snapshot() if s["device"] == caller.device.index]
+            for tensor in tensors:
+                address = tensor.data_ptr()
+                owner = next(
+                    s["stream"] for s in segments if s["address"] <= address < s["address"] + s["total_size"]
+                )
+                assert owner == caller.npu_stream, (
+                    f"{collective.__name__} buffer allocated on {owner}, expected compute stream {caller.npu_stream}"
+                )
+            return collective(*tensors, **kwargs)
+        return checked
+
+    apply_updates = optimizer._apply_shard_updates
+
+    def checked_apply(*args):
+        stream = torch.npu.current_stream()
+        assert stream == caller, f"Muon applied parameters on {stream}, expected {caller}"
+        return apply_updates(*args)
+
+    with patch.object(optimizer, "_apply_shard_updates", wraps=checked_apply) as apply, \
+            patch.object(dist, "all_gather_into_tensor", wraps=check_operands(dist.all_gather_into_tensor)) as gather, \
+            patch.object(dist, "broadcast", wraps=check_operands(dist.broadcast)) as broadcast:
+        _optimizer_step(optimizer)
+    assert gather.called and broadcast.called and apply.called, "Expected shard gather, broadcast and apply"
+
+
 def test_muon_e2e_fsdp_overlap_2p():
     """Feature: Muon single-axis FSDP communication and computation overlap.
 
@@ -395,6 +429,8 @@ def test_muon_e2e_fsdp_overlap_2p():
     """
     init_dist()
     mesh = init_device_mesh(device_type="npu", mesh_shape=(2,), mesh_dim_names=("dp",))
+    with torch.npu.stream(torch.npu.Stream()):
+        _assert_pipeline_buffer_stream(mesh)
     for group_count in (1, 2, 4):
         _assert_overlap_trajectory(mesh, group_count)
 
@@ -421,7 +457,7 @@ def test_muon_e2e_fsdp_overlap_2p():
 
 
 def test_muon_e2e_hsdp_overlap_4p():
-    """Feature: Replica broadcasts consume completed writes from the apply stream.
+    """Feature: Replica broadcasts consume completed updates from the caller stream.
 
     Description: Compare four-batch pipelining with serial Muon on a 2 x 2 HSDP mesh.
     Expectation: Sharded weights and replica copies match the serial path exactly.

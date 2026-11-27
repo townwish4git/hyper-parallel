@@ -89,16 +89,6 @@ class _ShardBatch:
     last_in_assignment: bool
 
 
-@dataclass
-class _GatheredShardBatch:
-    """Gather results owned by the communication stream."""
-
-    batch: _ShardBatch
-    inputs: Dict[torch.nn.Parameter, torch.Tensor]
-    compute_coords: Dict[torch.nn.Parameter, Tuple[int, ...]]
-    ready: Any
-
-
 _PackedShardUpdates = Dict[
     Tuple[int, ...], Tuple[torch.Tensor, List[Tuple[torch.nn.Parameter, int, int]]]
 ]
@@ -111,16 +101,16 @@ _LocalWindowQuotas = Dict[_LocalQueueKey, Deque[int]]
 
 @dataclass
 class _ShardPipelineBuffers:
-    """Scratch storage owned by the communication stream for one pipeline run."""
+    """Reusable scratch allocated and consumed on the caller's compute stream."""
 
     gather: Dict = field(default_factory=dict)
-    owner_slots: Tuple[Dict, Dict] = field(default_factory=lambda: ({}, {}))
+    owner: Dict = field(default_factory=dict)
     broadcast: Dict = field(default_factory=dict)
 
 
 @dataclass
 class _BroadcastShardBatch:
-    """Broadcast outputs waiting to be consumed by the apply stream."""
+    """Packed updates kept alive until the compute stream joins the broadcasts."""
 
     batch: _ShardBatch
     packed: _PackedShardUpdates
@@ -363,7 +353,6 @@ class Muon(BaseDistributedOptimizer):
         self.ns_transform_fn = advanced.ns_transform_fn
         self.post_update_fn = advanced.post_update_fn
         self.overlap_shard_comm = advanced.overlap_shard_comm
-        self._shard_pipeline_streams: Dict[torch.device, Tuple[Any, Any]] = {}
         self.reset_optimizer_parameters()
 
     def reset_optimizer_parameters(self) -> None:
@@ -631,19 +620,16 @@ class Muon(BaseDistributedOptimizer):
                 yield _ShardBatch(group_idx, assignment, params, batch_idx == len(batches) - 1)
 
     def _prepare_shard_batch(
-            self, batch: _ShardBatch, backend: Any, stream: Any, buffers: _ShardPipelineBuffers, slot: int,
-    ) -> _GatheredShardBatch:
-        """Produce this batch's momentum and gathered inputs on the communication stream."""
-        with backend.stream(stream), torch.profiler.record_function("muon.pipeline.gather"):
+            self, batch: _ShardBatch, buffers: _ShardPipelineBuffers, while_gathering: Callable[[], None],
+    ) -> Tuple[Dict[torch.nn.Parameter, torch.Tensor], Dict[torch.nn.Parameter, Tuple[int, ...]]]:
+        """Pack on the caller stream and submit independent work before waiting for gather."""
+        with torch.profiler.record_function("muon.pipeline.gather"):
             ns_inputs = self._update_muon_momentum(self.param_groups[batch.group_idx], batch.params)
-            gathered, coords = self._gather_shard_inputs(
+            return self._gather_shard_inputs(
                 batch.params, ns_inputs, batch.assignment, self._shard_compute_coord[batch.group_idx],
                 buffer_cache=buffers.gather, fallback_dtype=torch.bfloat16,
-                owner_buffer_cache=buffers.owner_slots[slot],
+                owner_buffer_cache=buffers.owner, overlap_work=while_gathering,
             )
-            ready = backend.Event()
-            ready.record(stream)
-        return _GatheredShardBatch(batch, gathered, coords, ready)
 
     def _process_shard_pipeline(
             self, batches: Iterator[_ShardBatch], device: torch.device, broadcaster: AsyncReplicateBroadcaster,
@@ -661,103 +647,70 @@ class Muon(BaseDistributedOptimizer):
             self._process_serial_assignment(first.group_idx, first.assignment, broadcaster, overlap_work)
             return
 
-        backend = getattr(torch, device.type)
-        compute_stream = backend.current_stream(device)
-        if device not in self._shard_pipeline_streams:
-            self._shard_pipeline_streams[device] = backend.Stream(device=device), backend.Stream(device=device)
-        comm_stream, apply_stream = self._shard_pipeline_streams[device]
-        comm_stream.wait_stream(compute_stream)
-        apply_stream.wait_stream(compute_stream)
         buffers = _ShardPipelineBuffers()
         try:
-            apply_done = self._run_shard_pipeline(
-                chain((first, second), batches), backend, compute_stream, comm_stream, apply_stream,
-                broadcaster, local_batches, device, buffers, quotas,
+            self._run_shard_pipeline(
+                first, chain((second,), batches), broadcaster, local_batches, device, buffers, quotas,
             )
         except Exception:
-            # The caller still owns the scratch storage while queued work drains.
-            backend.synchronize(device)
+            # Drain any partially submitted collective before releasing its scratch.
+            getattr(torch, device.type).synchronize(device)
             raise
-        compute_stream.wait_event(apply_done)
-        # The allocator can reuse these communication-stream buffers as soon as this run returns.
-        comm_stream.wait_event(apply_done)
 
     def _run_shard_pipeline(
-            self, batches: Iterator[_ShardBatch], backend: Any, compute_stream: Any, comm_stream: Any,
-            apply_stream: Any, broadcaster: AsyncReplicateBroadcaster,
-            local_batches: Dict[_LocalQueueKey, _LocalBatches],
-            device: torch.device, buffers: _ShardPipelineBuffers,
-            quotas: _LocalWindowQuotas,
-    ) -> Any:
-        """Enqueue the stages while keeping the collective order identical across ranks."""
-        first = next(batches)
-
+            self, batch: _ShardBatch, following_batches: Iterator[_ShardBatch], broadcaster: AsyncReplicateBroadcaster,
+            local_batches: Dict[_LocalQueueKey, _LocalBatches], device: torch.device,
+            buffers: _ShardPipelineBuffers, quotas: _LocalWindowQuotas,
+    ) -> None:
+        """Overlap process-group collectives with work on the caller's compute stream."""
         def run_local(group_idx: int) -> None:
             key = group_idx, device
             self._run_local_window(group_idx, local_batches.get(key), quotas.get(key))
 
-        current = self._prepare_shard_batch(first, backend, comm_stream, buffers, 0)
-        run_local(first.group_idx)
-        previous = None
-        apply_done = None
-        for index, following in enumerate(chain(batches, (None,))):
+        inputs, coords = self._prepare_shard_batch(batch, buffers, partial(run_local, batch.group_idx))
+        pending = None
+
+        def compute_and_broadcast() -> None:
+            nonlocal pending
+            pg = batch.assignment.shard_pgs[0]
             with torch.profiler.record_function("muon.pipeline.ns"):
-                compute_stream.wait_event(current.ready)
-                batch = current.batch
-                shard_size = dist.get_world_size(batch.assignment.shard_pgs[0])
-                group = self.param_groups[batch.group_idx]
-                updates = self._compute_shard_updates(current.inputs, group, shard_size)
-                ns_done = backend.Event()
-                ns_done.record(compute_stream)
+                updates = self._compute_shard_updates(
+                    inputs, self.param_groups[batch.group_idx], dist.get_world_size(pg),
+                )
 
-            if previous is not None:
-                local_group = previous.batch.group_idx
-                # The next shard NS is already queued on the compute stream.
-                # Independent local work can cover the rest of the older broadcast.
-                run_local(local_group)
-                apply_done = self._apply_pipeline_batch(previous, backend, apply_stream, compute_stream, broadcaster)
+            if pending is not None:
+                run_local(pending.batch.group_idx)
+                self._apply_pipeline_batch(pending, broadcaster)
 
-            # Put the next gather ahead of this broadcast on the communication
-            # stream so the next NS can run while this broadcast is in flight.
-            # At this point the target owner buffer's previous broadcast pack is already queued.
-            prefetched = self._prepare_shard_batch(
-                following, backend, comm_stream, buffers, (index + 1) % 2,
-            ) if following else None
-            with backend.stream(comm_stream), torch.profiler.record_function("muon.pipeline.broadcast"):
-                comm_stream.wait_event(ns_done)
-                if apply_done is not None:
-                    comm_stream.wait_event(apply_done)
-                pg = batch.assignment.shard_pgs[0]
+            # Apply has consumed the previous broadcast slot. Pack before the
+            # next gather unpacks into the owner slot, which updates may alias.
+            with torch.profiler.record_function("muon.pipeline.broadcast"):
                 packed = self._pack_shard_updates(
-                    batch.params, updates, current.compute_coords, (dist.get_rank(pg),), buffers.broadcast,
+                    batch.params, updates, coords, (dist.get_rank(pg),), buffers.broadcast,
                 )
                 works = self._launch_shard_axis_broadcasts(packed, pg, 0, ())
-            previous = _BroadcastShardBatch(batch, packed, works)
-            current = prefetched
+            pending = _BroadcastShardBatch(batch, packed, works)
 
+        for following in following_batches:
+            # Queue gather(i+1) before broadcast(i) on the same process group.
+            # The callback consumes owner(i) while gather(i+1) is in flight.
+            inputs, coords = self._prepare_shard_batch(following, buffers, compute_and_broadcast)
+            batch = following
+        compute_and_broadcast()
         run_local(batch.group_idx)
-        return self._apply_pipeline_batch(previous, backend, apply_stream, compute_stream, broadcaster)
+        self._apply_pipeline_batch(pending, broadcaster)
 
     def _apply_pipeline_batch(
-            self,
-            pending: _BroadcastShardBatch,
-            backend: Any,
-            stream: Any,
-            compute_stream: Any,
-            broadcaster: AsyncReplicateBroadcaster,
-    ) -> Any:
-        """Make the apply event the release point for the broadcast slot."""
+            self, pending: _BroadcastShardBatch, broadcaster: AsyncReplicateBroadcaster,
+    ) -> None:
+        """Join the shard broadcasts on the caller stream before applying or reusing the slot."""
         batch = pending.batch
-        with backend.stream(stream), torch.profiler.record_function("muon.pipeline.apply"):
+        with torch.profiler.record_function("muon.pipeline.apply"):
             for work in pending.works:
                 work.wait()
             self._apply_shard_updates(pending.packed, self.param_groups[batch.group_idx], batch.assignment)
-            done = backend.Event()
-            done.record(stream)
         if batch.last_in_assignment and batch.assignment.is_replicated:
-            compute_stream.wait_event(done)
             broadcaster.flush_group(batch.assignment)
-        return done
 
     def _run_post_update_fn(
             self,

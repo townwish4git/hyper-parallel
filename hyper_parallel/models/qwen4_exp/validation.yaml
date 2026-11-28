@@ -1,0 +1,28 @@
+schema_version: 2
+model:
+  adapter: qwen4_exp
+  builder:
+    _target_: hyper_parallel.models.qwen4_exp.adapter.crop.build_crop
+    config_path: /path/to/flash-next-local-source
+    sparse_budget: 8
+    model_init_dtype: float32
+reference:
+  source_path: /path/to/flash-next-local-source
+  revision: 812d96e10a0dd82b69d749e68693698cf6c36daa
+launcher:
+  module: scripts.train_vl
+  config: recipes/train_crop.yaml
+  timeout_seconds: 1800
+matrix:
+  devices: 4
+  steps: 12
+  baseline: {tp: 1, cp: 1, ep: 1, fsdp: 4, recompute_layer: []}
+  axes:
+    cp: [2]
+    ep: [2]
+  combined:
+    - {cp: 2, ep: 2}
+acceptance:
+  parameters: {max_abs: 1.0e-6, relative_l2: 1.0e-4}
+  same_topology: {loss_max_abs: 0.0005, norm_max_abs: 0.002}
+  cross_topology: {loss_max_abs: 0.005, norm_max_abs: 0.125}

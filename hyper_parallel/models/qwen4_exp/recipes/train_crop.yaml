@@ -1,0 +1,222 @@
+# Four Ascend devices. The crop keeps all 48 decoder, 27 vision and 1 draft layers.
+model:
+  _target_: hyper_parallel.models.qwen4_exp.adapter.crop.build_crop
+  config_path: /path/to/flash-next-local-source
+  sparse_budget: 8
+model_init_dtype: float32
+
+training:
+  backend: hccl
+  init_device: meta
+  train_iters: 12
+  global_batch_size: 4
+  micro_batch_size: 1
+  loss_aggregation: token_weighted
+  max_grad_norm: 1.0
+  seed: 42
+
+accelerator:
+  tp_size: 1
+  pp_size: 1
+  cp_size: 2
+  ep_size: 2
+  sequence_parallel: false
+  loss_parallel: false
+
+fsdp_config:
+  wrapper_class: [Qwen4ExpTextDecoderLayer, Qwen4ExpVisionBlock, Embedding]
+  dp_shard_size: 4
+  edp_shard_size: 2
+  mix_precision:
+    param_dtype: bfloat16
+    reduce_dtype: float32
+    cast_forward_inputs: false
+  reshard_after_forward: true
+  forward_prefetch_depth: 0
+  backward_prefetch_depth: 0
+
+plan_overrides:
+  - match: model.language_model.embed_tokens
+    params: {weight: &rep {tp: replicate, cp: replicate}}
+    in_src: &embed_inputs {input: *rep}
+    in_dst: *embed_inputs
+    out_src: *rep
+    out_dst: *rep
+  - match: lm_head
+    in_src: &head_inputs {input: *rep}
+    in_dst: *head_inputs
+    out_src: *rep
+    out_dst: *rep
+  - match: model.language_model.layers.*.linear_attn
+    replace:
+      kind: module
+      implementation:
+        _target_: hyper_parallel.components.modules.GatedDeltaNet
+        backend: eager
+        conv_backend: eager
+        chunk_size: 16
+        ulysses_degree: null
+  - match: model.language_model.layers.*.self_attn
+    params: &qsa_params
+      q_proj.weight: *rep
+      k_proj.weight: *rep
+      v_proj.weight: *rep
+      o_proj.weight: *rep
+      indexer.index_qk_proj.weight: *rep
+  - match: mtp.layers.*.self_attn
+    params: *qsa_params
+  - match: '*.layers.*.*_hyper_connection'
+    params:
+      input_mix_weight_down.weight: *rep
+      input_mix_weight_up.weight: *rep
+      block_inject_weight.weight: *rep
+  - match: model.visual.patch_embed
+    params:
+      proj.weight: *rep
+      proj.bias: *rep
+  - match: model.visual.pos_embed
+    params:
+      weight: *rep
+  - match: model.visual.blocks.*.attn
+    params:
+      qkv.weight: *rep
+      qkv.bias: *rep
+      proj.weight: *rep
+      proj.bias: *rep
+  - match: model.visual.blocks.*.mlp
+    params: &vision_mlp_params
+      linear_fc1.weight: *rep
+      linear_fc1.bias: *rep
+      linear_fc2.weight: *rep
+      linear_fc2.bias: *rep
+  - match: model.visual.merger
+    params: *vision_mlp_params
+  - match: model.language_model.layers.0
+    in_src: &global_hidden
+      hidden_states: *rep
+    in_dst: *global_hidden
+    out_src: &sequence_shard {tp: replicate, cp: 'shard(1)'}
+    out_dst: *sequence_shard
+  - match: model.language_model.hyper_connection_mixer
+    params: &mixer_params
+      input_mix_weight_down.weight: *rep
+      input_mix_weight_up.weight: *rep
+    in_src: &local_mixer
+      hyper_input: *sequence_shard
+    in_dst: *local_mixer
+    out_src: *rep
+    out_dst: *rep
+  - match: mtp.hyper_connection_mixer
+    params: *mixer_params
+    in_src: *local_mixer
+    in_dst: *local_mixer
+    out_src: *rep
+    out_dst: *rep
+  - match: model.language_model.layers.*.ple
+    params:
+      ple_embedding.ngram_embedding.weight: *rep
+      key_proj.weight: *rep
+      value_proj.weight: *rep
+      conv1d.weight: *rep
+    in_src: &local_hidden {hidden_states: *sequence_shard}
+    in_dst: *local_hidden
+    out_src: *sequence_shard
+    out_dst: *sequence_shard
+  - match: mtp
+    params:
+      fc_embedding.weight: *rep
+      fc_hidden.weight: *rep
+    in_src: &draft_inputs
+      hidden_states: *sequence_shard
+      next_embeddings: *rep
+      position_ids: *rep
+      attention_mask: *rep
+    in_dst: *draft_inputs
+    out_src: *rep
+    out_dst: *rep
+  - match: model.language_model.layers.0.forward
+    when: cp
+    replace:
+      kind: method
+      implementation: hyper_parallel.models.qwen4_exp.adapter.cp.shard_decoder_input
+  - match: model.language_model.hyper_connection_mixer.forward
+    when: cp
+    replace: &gather_mixer
+      kind: method
+      implementation: hyper_parallel.models.qwen4_exp.adapter.cp.gather_mixer_output
+  - match: mtp.hyper_connection_mixer.forward
+    when: cp
+    replace: *gather_mixer
+  - match: model.language_model.layers.*.self_attn.forward
+    when: cp
+    replace: &gather_sequence
+      kind: method
+      implementation: hyper_parallel.models.qwen4_exp.adapter.cp.gather_sequence_compute
+  - match: model.language_model.layers.*.ple.forward
+    when: cp
+    replace: *gather_sequence
+  - match: mtp.layers.*.self_attn.forward
+    when: cp
+    replace: *gather_sequence
+  - match: mtp.forward
+    when: cp
+    replace:
+      kind: method
+      implementation: hyper_parallel.models.qwen4_exp.adapter.cp.shard_mtp_embeddings
+  - match: model.language_model.layers.*.mlp.forward
+    when: ep
+    replace: &expert_parallel
+      kind: method
+      implementation: hyper_parallel.distributed.expert_parallel.recipes.qwen2moe_ep_compute_fn
+  - match: mtp.layers.*.mlp.forward
+    when: ep
+    replace: *expert_parallel
+
+dataset:
+  _target_: examples.qwen3_8_flash_next.fixture.RepeatedImageCaption
+  image_path: /path/to/validation-image.png
+  training_mode: pretrain
+  model_assets:
+    _target_: examples.qwen3_8_flash_next.fixture.build_crop_processor
+    config_path: /path/to/flash-next-local-source
+  data_transform:
+    _target_: examples.qwen3_8_flash_next.fixture.CropTransform
+    max_seq_len: 16
+
+dataloader:
+  _target_: hyper_parallel.data.batching.FixedBatchDataLoader
+  collate_fn:
+    _target_: hyper_parallel.data.batching.build_omni_collate_fn
+    pad_to_length: 16
+  get_batch:
+    _target_: hyper_parallel.models.qwen4_exp.adapter.batching.FlashNextBatch
+  sampler_type: cyclic
+  drop_last: true
+  num_workers: 0
+  pin_memory: false
+
+optimizer:
+  _target_: hyper_parallel.components.optim.AdamW
+  fp32_main_params: true
+  adamw_config:
+    adamw_lr: 0.001
+    adamw_weight_decay: 0.0
+    adamw_betas: [0.9, 0.95]
+
+lr_scheduler:
+  _target_: hyper_parallel.components.optim.MultiLRScheduler
+  lr_decay_style: constant
+  lr_config:
+    lr: 0.001
+    lr_warmup_steps: 0
+
+checkpoint:
+  save_ckpt: false
+  checkpoint_dir: ./outputs/qwen3_8_flash_next_crop
+  restore_from: null
+
+activation_checkpoint:
+  mode: 'off'
+model_integration:
+  mode: runtime
+loss_fn: null

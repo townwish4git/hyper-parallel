@@ -1,0 +1,83 @@
+<svg xmlns="http://www.w3.org/2000/svg" xml:lang="zh-CN" width="960" height="566" viewBox="0 0 960 566" role="img" aria-labelledby="title description">
+  <title id="title">让 Cube 和 Vector 同时处理不同分块</title>
+  <desc id="description">上图串行处理三个分块。下图中，Cube 计算第 1 块时 Vector 处理第 0 块，Cube 计算第 2 块时 Vector 处理第 1 块，因此整段示意时间更短。</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 1 1 L 8 5 L 1 9" fill="none" stroke="#929eaf" stroke-width="1.7"/>
+    </marker>
+  </defs>
+  <style>
+    text { font-family: system-ui, -apple-system, "Segoe UI", "PingFang SC", "Noto Sans CJK SC", "Microsoft YaHei", sans-serif; fill: #f1f4f7; }
+    .title { font-size: 28px; font-weight: 700; }
+    .subtitle { font-size: 16px; fill: #b4bfce; }
+    .heading { font-size: 19px; font-weight: 650; }
+    .body { font-size: 16px; font-weight: 550; }
+    .small { font-size: 14px; fill: #bac3ce; }
+    .count { font-size: 26px; font-weight: 700; }
+    .teal-text { fill: #66e0bc; }
+    .amber-text { fill: #ffcb82; }
+    .panel { fill: #1b1e24; stroke: #3a404a; stroke-width: 1.3; }
+    .cube { fill: #24486f; stroke: #3f719f; stroke-width: 1.3; }
+    .vector { fill: #174b40; stroke: #2d8e76; stroke-width: 1.3; }
+    .memory { fill: #2d323c; stroke: #4c5766; stroke-width: 1.3; }
+    .removed { fill: #302921; stroke: #8a6643; stroke-width: 1.3; }
+    .calc-tile { fill: #367abe; stroke: #5695d3; stroke-width: 1; }
+    .copy-tile { fill: #292f37; stroke: #9ba8b7; stroke-width: 1.3; stroke-dasharray: 5 3; }
+    .example { stroke: #ffcb82; stroke-width: 2.5; }
+    .connector { fill: none; stroke: #929eaf; stroke-width: 1.7; marker-end: url(#arrow); }
+    .guide { fill: none; stroke: #657287; stroke-width: 1.4; stroke-dasharray: 5 5; }
+  </style>
+  <rect width="960" height="566" rx="20" fill="#14171c"/>
+  <text class="title" x="28" y="46">让 Cube 和 Vector 同时处理不同分块</text>
+  <text class="subtitle" x="28" y="73">Cube 写完并通知 Vector 后，Vector 开始处理该块。两个同步槽让相邻分块的工作重叠。</text>
+  <rect class="panel" x="28" y="96" width="904" height="175" rx="15"/>
+  <rect class="panel" x="28" y="285" width="904" height="219" rx="15"/>
+  <text class="heading" x="51" y="130">串行处理</text>
+  <text class="heading" x="51" y="319">Cube／Vector 流水</text>
+  <text class="body" x="51" y="177">Cube</text>
+  <text class="body" x="51" y="230">Vector</text>
+  <text class="body" x="51" y="370">Cube</text>
+  <text class="body" x="51" y="423">Vector</text>
+  <path class="guide" d="M 676 345 V 465"/>
+  <path class="guide" d="M 852 143 V 465"/>
+  <rect class="vector" x="677" y="344" width="174" height="107" rx="7"/>
+  <text class="body teal-text" x="764" y="388" text-anchor="middle">流水重叠</text>
+  <text class="body teal-text" x="764" y="411" text-anchor="middle">节省时间</text>
+  <path class="connector" d="M 152 465 H 865"/>
+  <text class="small" x="893" y="471" text-anchor="middle">时间</text>
+  <rect class="cube" x="153" y="151" width="143" height="40" rx="8"/>
+  <text class="body" x="224.5" y="177.0" text-anchor="middle">分块 0</text>
+  <rect class="vector" x="298" y="204" width="85" height="40" rx="8"/>
+  <text class="body" x="340.5" y="230.0" text-anchor="middle">V0</text>
+  <path class="connector" d="M 296 191 l 10 11"/>
+  <rect class="cube" x="153" y="344" width="143" height="40" rx="8"/>
+  <text class="body" x="224.5" y="370.0" text-anchor="middle">分块 0</text>
+  <rect class="vector" x="298" y="397" width="85" height="40" rx="8"/>
+  <text class="body" x="340.5" y="423.0" text-anchor="middle">V0</text>
+  <path class="connector" d="M 296 384 l 10 11"/>
+  <rect class="cube" x="386" y="151" width="143" height="40" rx="8"/>
+  <text class="body" x="457.5" y="177.0" text-anchor="middle">分块 1</text>
+  <rect class="vector" x="531" y="204" width="85" height="40" rx="8"/>
+  <text class="body" x="573.5" y="230.0" text-anchor="middle">V1</text>
+  <path class="connector" d="M 529 191 l 10 11"/>
+  <rect class="cube" x="298" y="344" width="143" height="40" rx="8"/>
+  <text class="body" x="369.5" y="370.0" text-anchor="middle">分块 1</text>
+  <rect class="vector" x="443" y="397" width="85" height="40" rx="8"/>
+  <text class="body" x="485.5" y="423.0" text-anchor="middle">V1</text>
+  <path class="connector" d="M 441 384 l 10 11"/>
+  <rect class="cube" x="619" y="151" width="143" height="40" rx="8"/>
+  <text class="body" x="690.5" y="177.0" text-anchor="middle">分块 2</text>
+  <rect class="vector" x="764" y="204" width="85" height="40" rx="8"/>
+  <text class="body" x="806.5" y="230.0" text-anchor="middle">V2</text>
+  <path class="connector" d="M 762 191 l 10 11"/>
+  <rect class="cube" x="443" y="344" width="143" height="40" rx="8"/>
+  <text class="body" x="514.5" y="370.0" text-anchor="middle">分块 2</text>
+  <rect class="vector" x="588" y="397" width="85" height="40" rx="8"/>
+  <text class="body" x="630.5" y="423.0" text-anchor="middle">V2</text>
+  <path class="connector" d="M 586 384 l 10 11"/>
+  <rect class="cube" x="204" y="527" width="16" height="16" rx="3"/>
+  <text class="small" x="230" y="540">Cube GEMM</text>
+  <rect class="vector" x="415" y="527" width="16" height="16" rx="3"/>
+  <text class="small" x="441" y="540">Vector 单块处理</text>
+  <text class="small" x="859" y="540" text-anchor="middle">时序示意</text>
+</svg>

@@ -27,6 +27,9 @@ or the square of a symmetric matrix. It accepts 2D matrices or 3D batches in
 plain NPU storage, with a contiguous, non-aliasing output. All tensors must
 share the same FP16 or BF16 dtype and device. The operator is forward-only.
 
+The [kernel design guide (Chinese)](./_ascendc/symmetric_matmul/README.md) illustrates
+the triangular schedule, writeback paths, and Cube/Vector overlap in the fused Muon iteration.
+
 Source the target CANN `set_env.sh` and use a Python environment with matching
 `torch` and `torch_npu` packages installed. CMake and a C++20 compiler are required.
 In this environment, `pip install -e .` builds the two shared libraries next to

@@ -39,6 +39,7 @@ from .impl.dsa_indexer_kl import (
 )
 from .impl.deepseek_sparse_attention import (
     DSA_ABSORBED, DSA_ABSORBED_SINK, DSA_COMPRESSED_BANKS, PackedDeepseekSparseAttentionFn, attention_native_only,
+    native_deepseek_sparse_attention_absorbed,
 )
 from .impl.gdn import GDN
 from .impl.grouped_matmul import GROUPED_MATMUL, GroupedMatmulFn
@@ -61,7 +62,8 @@ __all__ = [
     "deepseek_sparse_attention_with_sink",
     "gdn", "grouped_query_attention", "grouped_matmul", "grouped_swiglu", "kda", "mhc_post", "multi_latent_attention",
     "multi_latent_attention_with_stats",
-    "moe_router", "moe_token_reorder", "moe_token_restore", "mome", "ops", "rms_norm", "rms_norm_fp32_affine",
+    "moe_router", "moe_token_reorder", "moe_token_restore", "mome", "native_deepseek_sparse_attention_absorbed",
+    "ops", "rms_norm", "rms_norm_fp32_affine",
     "router_scores",
     "rope", "rope_interleaved", "rope_qk",
     "sinkhorn", "swiglu", "swiglu_clamped", "vision_attention",

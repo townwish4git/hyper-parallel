@@ -16,6 +16,7 @@
 
 from copy import deepcopy
 from pathlib import Path
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -28,11 +29,19 @@ hf = pytest.importorskip("transformers.models.glm5_next.modeling_glm5_next")
 # pylint: disable=wrong-import-position
 from hyper_parallel.components.checkpoint.weight_conversion import get_model_conversion_mapping
 from hyper_parallel.components.ops import ops
+from hyper_parallel.data.batching import OmniParallelBatch
+from hyper_parallel.data.parallel.dataloader_parallel import DataLoaderParallelContext
 from hyper_parallel.models.glm5_next.adapter.build import load_config
-from hyper_parallel.models.glm5_next.adapter.data import Glm5NextBatch
-from hyper_parallel.models.glm5_next.adapter.replacements import GlmMhc, GlmVisionAttention
+from hyper_parallel.models.glm5_next.adapter.context_parallel import (
+    Glm5NextCPKDA, Glm5NextCPSparseAttention, Glm5NextCPTrainingModel,
+)
+from hyper_parallel.models.glm5_next.adapter.data import Glm5NextRuntimeInputs
+from hyper_parallel.models.glm5_next.adapter.replacements import (
+    Glm5NextAlignedSparseAttention, GlmMhc, GlmVisionAttention,
+)
 from hyper_parallel.models.glm5_next.modeling_glm5_next import DecoderInput, Glm5NextPackedKDA, construct_model
 from hyper_parallel.models.glm5_next.sparse_attention import DocumentFragment, Glm5NextSparseAttention
+from hyper_parallel.trainer.runtime.loss_aggregation import count_loss_token
 
 
 _CONFIG = Path(__file__).resolve().parents[5] / "examples/training_demo/glm5_next/config_a5.json"
@@ -70,16 +79,71 @@ class TestGlmTraining(unittest.TestCase):
         self.assertIn("self_attn.conv1d.weight", mapped_targets)
         self.assertIn("mlp.experts.gate_up_proj", mapped_targets)
 
+    def test_cp_attention_variants_preserve_checkpoint_layout(self) -> None:
+        """Exercise CP construction on meta with a simulated rank and the same checkpoint layout."""
+        with torch.device("meta"):
+            standalone = construct_model(self.config)
+            parallel = Glm5NextCPTrainingModel(self.config, cp=SimpleNamespace(size=2, rank=1))
+
+        layers = parallel.model.language_model.layers
+        self.assertIsInstance(layers[0].self_attn, Glm5NextCPKDA)
+        self.assertIsInstance(layers[3].self_attn, Glm5NextCPSparseAttention)
+        self.assertIsInstance(layers[-1].self_attn, Glm5NextCPSparseAttention)
+        self.assertEqual(tuple(parallel.state_dict()), tuple(standalone.state_dict()))
+        self.assertEqual(
+            [rule.target_patterns for rule in get_model_conversion_mapping(parallel, add_legacy=False)],
+            [rule.target_patterns for rule in get_model_conversion_mapping(standalone, add_legacy=False)],
+        )
+
     def test_align_two_targets_before_cp_slicing(self) -> None:
         """Left padding and the end of each document must mask future predictions."""
-        labels = torch.tensor([[-100, 1, 2, 3, 4, 5, 6, 7]])
-        valid = labels.ne(-100)
-        batch = Glm5NextBatch._normalize_source_batch({  # pylint: disable=protected-access
+        labels = torch.tensor([[-100, 1, 2, 3, 4, -100, 6, 7]])
+        valid = torch.tensor([[False, True, True, True, True, True, True, True]])
+        bounds = torch.tensor([0, 6, 8], dtype=torch.int32)
+        media = torch.arange(8).reshape(2, 4)
+        batch = {
             "input_ids": labels.clamp_min(0), "labels": labels, "attention_mask": valid,
-            "cu_seq_lens": torch.tensor([0, 4, 8]),
-        })
-        torch.testing.assert_close(batch["shift_labels"], torch.tensor([[-100, 2, 3, -100, 5, 6, 7, -100]]))
-        torch.testing.assert_close(batch["mtp_labels"], torch.tensor([[-100, 3, -100, -100, 6, 7, -100, -100]]))
+            "cu_seq_lens": bounds, "pixel_values": media,
+        }
+        expected_shift = torch.tensor([[-100, 2, 3, 4, -100, -100, 7, -100]])
+        expected_mtp = torch.tensor([[-100, 3, 4, -100, -100, -100, -100, -100]])
+        for rank in (0, 1):
+            with self.subTest(rank=rank):
+                runtime = OmniParallelBatch(
+                    mesh_context=SimpleNamespace(sequence_parallel=False),
+                    device=torch.device("cpu"),
+                    dataloader_context=DataLoaderParallelContext(cp_world_size=2, cp_rank=rank),
+                    runtime_input_adapter=Glm5NextRuntimeInputs(),
+                )
+                model_inputs, loss_inputs = runtime(None, external_batch=batch)
+                shard = slice(rank * 4, (rank + 1) * 4)
+                torch.testing.assert_close(model_inputs["shift_labels"], expected_shift[:, shard])
+                torch.testing.assert_close(model_inputs["mtp_labels"], expected_mtp[:, shard])
+                torch.testing.assert_close(model_inputs["packed_doc_bounds"], bounds)
+                torch.testing.assert_close(model_inputs["pixel_values"], media)
+                count = valid[:, shard].sum()
+                torch.testing.assert_close(model_inputs["loss_normalizer"], count)
+                torch.testing.assert_close(count_loss_token(loss_inputs)["foundation_tokens"], count)
+
+    def test_aligned_indices_preserve_native_sparse_math(self) -> None:
+        """Keep padding in the adapter while preserving reference outputs and input gradients."""
+        config = self.config.text_config
+        config.index_topk = 8
+        base = Glm5NextSparseAttention(config, 3)
+        aligned = Glm5NextAlignedSparseAttention(config, 3)
+        with torch.no_grad():
+            for parameter in base.parameters():
+                parameter.normal_(std=0.05, generator=self.generator)
+        aligned.load_state_dict(base.state_dict())
+        hidden = torch.randn(1, 17, getattr(config, "hidden_size"), generator=self.generator, requires_grad=True)
+        kwargs = {"fragments": (DocumentFragment(0, 17, 0),), "local_start": 0, "indexer_mode": "sparse"}
+        expected, actual = base(hidden, **kwargs), aligned(hidden, **kwargs)
+        torch.testing.assert_close(actual, expected, atol=2e-6, rtol=2e-5)
+        torch.testing.assert_close(
+            torch.autograd.grad(actual.hidden.sum() + actual.indexer_loss, hidden),
+            torch.autograd.grad(expected.hidden.sum() + expected.indexer_loss, hidden),
+            atol=2e-6, rtol=2e-5,
+        )
 
     def test_sparse_matches_hf_and_distills_only_indexer(self) -> None:
         """HF parity for selection with competing pools and gradient isolation for each training mode."""
@@ -94,7 +158,7 @@ class TestGlmTraining(unittest.TestCase):
         candidate.load_state_dict(reference.state_dict())
         x = torch.randn(1, 17, getattr(config, "hidden_size"), generator=self.generator, requires_grad=True)
         expected = reference(x, attention_mask=torch.ones_like(x[..., 0], dtype=torch.bool))[0]
-        args = {"fragments": (DocumentFragment(0, 17, 0),), "local_start": 0, "cp": None}
+        args = {"fragments": (DocumentFragment(0, 17, 0),), "local_start": 0}
         actual = candidate(x, indexer_mode="frozen", **args).hidden
         torch.testing.assert_close(actual, expected, rtol=2e-4, atol=2e-5)
         dy = torch.randn(actual.shape, generator=self.generator)
@@ -125,7 +189,7 @@ class TestGlmTraining(unittest.TestCase):
         reference.load_state_dict(candidate.state_dict())
         x = torch.randn(1, 17, getattr(config, "hidden_size"), generator=self.generator, requires_grad=True)
         geometry = DecoderInput((0, 9, 17), (), 0, 17)
-        actual = candidate(x, geometry=geometry, cp=None)
+        actual = candidate(x, geometry=geometry)
         with patch.object(hf, "chunk_kimi_delta_attention", hf.recurrent_kimi_delta_attention):
             expected = torch.cat((reference(x[:, :9]), reference(x[:, 9:])), dim=1)
         torch.testing.assert_close(actual, expected, rtol=3e-4, atol=3e-5)

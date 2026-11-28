@@ -21,45 +21,52 @@ from typing import Any
 
 import torch
 
-from hyper_parallel.data.batching import OmniParallelBatch
-from hyper_parallel.data.constants import IGNORE_INDEX, OMNI_CP_TOKEN_FIELDS
-from hyper_parallel.data.parallel.batch_parallel import CPBatchSharder
+from hyper_parallel.data.batching.runtime_input import RuntimeInputAdapter, RuntimeInputContext
+from hyper_parallel.data.constants import IGNORE_INDEX
 from hyper_parallel.models.glm5_next.modeling_glm5_next import document_bounds, future_positions
 
 
-class Glm5NextBatch(OmniParallelBatch):
+class Glm5NextRuntimeInputs(RuntimeInputAdapter):
     """Build t+1/t+2 targets before splitting text, leaving media fields global."""
 
-    def __init__(self, **kwargs: Any) -> None:
-        """Shard precomputed prediction targets alongside the decoder tokens."""
-        super().__init__(**kwargs)
-        self.cp_sharder = CPBatchSharder(
-            self.parallel_context, token_fields=OMNI_CP_TOKEN_FIELDS.union(("shift_labels", "mtp_labels")),
-        )
+    def cp_token_fields(self) -> tuple[str, ...]:
+        """Shard precomputed targets alongside the decoder tokens."""
+        return ("shift_labels", "mtp_labels")
 
-    @staticmethod
-    def _normalize_source_batch(source_batch: Mapping[str, Any]) -> dict[str, Any]:
-        batch = OmniParallelBatch._normalize_source_batch(source_batch)
+    def prepare_source_batch(self, batch: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Prepare packed prediction targets from the unsharded batch."""
         labels = batch["labels"]
-        valid = batch.get("attention_mask", torch.ones_like(labels)).bool()
+        mask = batch.get("attention_mask")
+        valid = torch.ones_like(labels, dtype=torch.bool) if mask is None else mask.bool()
         labels = labels.masked_fill(~valid | ~batch["loss_mask"].bool(), IGNORE_INDEX)
-        bounds = batch.get("cu_seq_lens")
-        offsets = document_bounds(labels.shape[1], bounds)
-        batch["attention_mask"] = valid
-        batch["packed_doc_bounds"] = torch.tensor(offsets, dtype=torch.int32, device=labels.device)
-        batch["shift_labels"] = future_positions(labels, offsets, 1, IGNORE_INDEX).masked_fill(~valid, IGNORE_INDEX)
+        offsets = document_bounds(labels.shape[1], batch.get("cu_seq_lens"))
+        shift_labels = future_positions(labels, offsets, 1, IGNORE_INDEX).masked_fill(~valid, IGNORE_INDEX)
         mtp_labels = future_positions(labels, offsets, 2, IGNORE_INDEX)
         next_valid = future_positions(valid, offsets, 1, 0)
-        batch["mtp_labels"] = mtp_labels.masked_fill(~(valid & next_valid), IGNORE_INDEX)
-        return batch
+        return {
+            **batch,
+            "attention_mask": valid,
+            "cu_seq_lens": torch.tensor(offsets, dtype=torch.int32, device=labels.device),
+            "shift_labels": shift_labels,
+            "mtp_labels": mtp_labels.masked_fill(~(valid & next_valid), IGNORE_INDEX),
+        }
 
-    @staticmethod
-    def _split_model_and_loss_inputs(batch: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
-        model_inputs, loss_inputs = OmniParallelBatch._split_model_and_loss_inputs(batch)
-        valid = batch["attention_mask"].bool()
+    def runtime_input_fields(self) -> tuple[str, ...]:
+        """Declare the forward-only inputs derived after transport."""
+        return ("packed_doc_bounds", "loss_normalizer")
+
+    def build_runtime_inputs(self, *, batch: Mapping[str, Any], context: RuntimeInputContext) -> Mapping[str, Any]:
+        """Forward the global boundaries and the valid local input-token count."""
+        del context
+        return {"packed_doc_bounds": batch["cu_seq_lens"], "loss_normalizer": batch["attention_mask"].sum()}
+
+    def prepare_loss_inputs(self, *, batch: Mapping[str, Any], loss_inputs: dict[str, Any]) -> dict[str, Any]:
+        """Use the same valid input-token budget for Trainer loss weighting."""
+        valid = batch["attention_mask"]
         # All objectives are sums over the same global packed input-token budget.
         # Prompt tokens can train KPool even on a shard with no supervised LM labels.
-        loss_inputs["shift_labels"] = torch.zeros_like(batch["shift_labels"]).masked_fill(~valid, IGNORE_INDEX)
-        loss_inputs["loss_mask"] = valid
-        model_inputs["loss_normalizer"] = valid.sum()
-        return model_inputs, loss_inputs
+        return {
+            **loss_inputs,
+            "shift_labels": torch.zeros_like(batch["shift_labels"]).masked_fill(~valid, IGNORE_INDEX),
+            "loss_mask": valid,
+        }

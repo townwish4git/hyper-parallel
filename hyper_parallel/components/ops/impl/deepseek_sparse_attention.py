@@ -81,7 +81,7 @@ def _dense_absorbed_scores(
     return scores, counts.unsqueeze(2)
 
 
-def _native_absorbed(
+def native_deepseek_sparse_attention_absorbed(
     x: torch.Tensor, key: torch.Tensor, query_rope: torch.Tensor, key_rope: torch.Tensor,
     topk_indices: torch.Tensor, scale: float, query_ends: torch.Tensor, key_ends: torch.Tensor,
     *, sink_key: torch.Tensor | None = None, sink_value: torch.Tensor | None = None, dropout: float = 0.0,
@@ -347,6 +347,8 @@ def register_deepseek_sparse_attention(registry: OpRegistry) -> None:
                      "sparse_flash_mla_metadata"),
     )
     for spec in (DSA_ABSORBED, DSA_ABSORBED_SINK):
-        registry.register_impl(spec, name="native", devices=("cpu", "cuda", "npu"), load=lambda: _native_absorbed)
+        registry.register_impl(
+            spec, name="native", devices=("cpu", "cuda", "npu"), load=lambda: native_deepseek_sparse_attention_absorbed,
+        )
     registry.register_impl(DSA_ABSORBED, name="cann", devices=("npu",), load=_load_cann_absorbed)
     registry.register_impl(DSA_ABSORBED_SINK, name="omni", devices=("npu",), load=_load_omni_sink)

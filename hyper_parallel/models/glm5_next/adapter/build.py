@@ -16,14 +16,36 @@
 
 from __future__ import annotations
 
+from functools import partial
 from pathlib import Path
 from typing import Any
 
-import torch
 from transformers import Glm5NextConfig
+from transformers.conversion_mapping import get_checkpoint_conversion_mapping, register_checkpoint_conversion_mapping
 
+from hyper_parallel.distributed.context_parallel.cp_context import CPContext
+from hyper_parallel.distributed.mesh import MeshContext
 from hyper_parallel.models import HyperAutoModelForImageTextToText
-from hyper_parallel.models.glm5_next.modeling_glm5_next import Glm5NextTrainingModel, construct_model
+from hyper_parallel.models.glm5_next.adapter.context_parallel import Glm5NextCPTrainingModel
+from hyper_parallel.models.glm5_next.adapter.replacements import Glm5NextAlignedSparseAttention
+from hyper_parallel.models.glm5_next.modeling_glm5_next import Glm5NextTrainingModel, build_text_attention
+
+
+# Both training variants have the parameter layout that Transformers derives for GLM.
+for _architecture in (Glm5NextTrainingModel, Glm5NextCPTrainingModel):
+    register_checkpoint_conversion_mapping(
+        _architecture.__name__, get_checkpoint_conversion_mapping("glm5_next"), overwrite=True,
+    )
+
+
+def _construct_training_model(
+    config: Glm5NextConfig, *, mesh: MeshContext | None = None,
+) -> Glm5NextTrainingModel:
+    if mesh is not None and mesh.cp_size > 1:
+        return Glm5NextCPTrainingModel(config, cp=CPContext(mesh.cp_mesh))
+    return Glm5NextTrainingModel(
+        config, attention_factory=partial(build_text_attention, sparse=Glm5NextAlignedSparseAttention),
+    )
 
 
 def load_config(
@@ -65,7 +87,7 @@ def build_glm5_next(
         if not (directory / "config.json").is_file():
             raise FileNotFoundError(f"GLM checkpoint config does not exist: {directory}")
         return HyperAutoModelForImageTextToText.from_pretrained(
-            str(directory), model_factory=construct_model, attn_implementation="eager",
+            str(directory), model_factory=_construct_training_model, attn_implementation="eager",
             local_files_only=True, config_overrides={
                 "hp_indexer_mode": indexer_mode, "hp_mtp_weight": mtp_weight,
                 "hp_kpool_weight": kpool_weight, "hp_ce_chunk_size": ce_chunk_size,
@@ -74,12 +96,5 @@ def build_glm5_next(
     config = load_config(config_path, indexer_mode=indexer_mode, mtp_weight=mtp_weight,
                          kpool_weight=kpool_weight, ce_chunk_size=ce_chunk_size)
     return HyperAutoModelForImageTextToText.from_config(
-        config, model_factory=construct_model, attn_implementation="eager", **kwargs,
+        config, model_factory=_construct_training_model, attn_implementation="eager", **kwargs,
     )
-
-
-def build_inventory_model(config_path: str) -> Glm5NextTrainingModel:
-    """Build the full architecture on meta for local structural inspection."""
-    config = load_config(config_path)
-    with torch.device("meta"):
-        return construct_model(config)

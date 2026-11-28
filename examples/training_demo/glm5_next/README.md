@@ -30,7 +30,7 @@ default 12 steps at global batch size four.
 
 ```bash
 HCCL_DETERMINISTIC=true torchrun --standalone --nproc_per_node=1 \
-  --module scripts.train_vl examples/training_demo/glm5_next/train_a5.yaml \
+  --module scripts.train_vl hyper_parallel/models/glm5_next/recipes/train_a5.yaml \
   --dataset.data_path=/path/to/replay.safetensors \
   --dataset.model_assets.pretrained_model_name_or_path=/path/to/GLM-5.3-Flash \
   --checkpoint.checkpoint_dir=/path/to/run
@@ -48,8 +48,9 @@ training and scheduler limits in the prepare and restore launches. Restore from
 the written step directory with `--checkpoint.restore_from=/path/to/global_step_2`.
 Keep `restore_dataloader_state` enabled for a true continuation. The
 [validation manifest](../../../hyper_parallel/models/glm5_next/validation.yaml)
-describes the fixed four-process matrix. Copy the Trainer YAML with concrete
-data and asset paths before running it.
+describes the fixed four-process matrix. Copy the
+[Trainer recipe](../../../hyper_parallel/models/glm5_next/recipes/train_a5.yaml)
+with concrete data and asset paths before running it.
 
 For Online SFT, replace the three dataset targets with
 `hyper_parallel.data.omni.build_dataset.build_online_omni_mapping_dataset`,

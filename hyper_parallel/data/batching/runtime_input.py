@@ -123,7 +123,22 @@ class RuntimeInputContext:
 
 
 class RuntimeInputAdapter(ABC):
-    """Extend a generic batch with model-owned forward inputs."""
+    """Extend a generic batch with model-owned inputs."""
+
+    def prepare_source_batch(self, batch: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Prepare collated Omni fields that need the complete sequence before CP."""
+        return batch
+
+    def cp_token_fields(self) -> tuple[str, ...]:
+        """Declare additional prepared Omni fields that follow the input token shards."""
+        return ()
+
+    def prepare_loss_inputs(
+        self, *, batch: Mapping[str, Any], loss_inputs: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Select the local Omni fields used for loss accounting."""
+        del batch
+        return loss_inputs
 
     def build(
             self,

@@ -24,13 +24,12 @@ from torch.nn import functional as F
 from transformers.models.glm5_next.configuration_glm5_next import Glm5NextTextConfig
 from transformers.models.glm5_next.modeling_glm5_next import Glm5NextTextAttention
 
-from hyper_parallel.components.ops import DsaQueryLayout, deepseek_sparse_attention_absorbed, dsa_indexer
-from hyper_parallel.distributed.context_parallel.cp_context import CPContext
+from hyper_parallel.components.ops import DsaQueryLayout, dsa_indexer, native_deepseek_sparse_attention_absorbed
 
 
 @dataclass(frozen=True)
 class DocumentFragment:
-    """One rank's queries and the corresponding prefix in global token coordinates."""
+    """Queries and the corresponding prefix in document-aligned token coordinates."""
 
     start: int
     stop: int
@@ -111,6 +110,8 @@ def _pool_kl(
 class Glm5NextSparseAttention(Glm5NextTextAttention):
     """Preserve HF projection names and select against raw document-relative KV."""
 
+    _attention_kernel = staticmethod(native_deepseek_sparse_attention_absorbed)
+
     def __init__(self, config: Glm5NextTextConfig, layer_idx: int) -> None:
         """Build the NoPE projections and the per-layer KPool indexer."""
         super().__init__(config, layer_idx)
@@ -156,15 +157,12 @@ class Glm5NextSparseAttention(Glm5NextTextAttention):
                 selected = dsa_indexer(query_index, pool_keys, index_weight, layout=layout,
                                        sparse_count=self.indexer.index_topk // ratio)
             indices = _expand_pool_ids(selected, positions, ratio).squeeze(0).unsqueeze(1)
-            # The A5 ABI requires all valid slots before any sentinel, including the tail.
-            indices = indices.masked_fill(indices < 0, key_len).sort(-1).values
-            indices = indices.masked_fill(indices == key_len, -1)
-            indices = F.pad(indices, (0, -indices.shape[-1] % 1024), value=-1)
+            indices = self._kernel_indices(indices, key_len)
             query_ends = positions.new_tensor([query_len])
             key_ends = positions.new_tensor([key_len])
         q_rope = query.new_zeros((*query.shape[:-1], 64))
         k_rope = kv.new_zeros((*kv.shape[:2], 1, 64))
-        out = deepseek_sparse_attention_absorbed(
+        out = self._attention_kernel(
             query, kv.unsqueeze(2), q_rope, k_rope, indices, self.scaling, query_ends, key_ends,
         )[0][..., :self.kv_lora_rank]
         if indexer_mode != "frozen":
@@ -177,21 +175,29 @@ class Glm5NextSparseAttention(Glm5NextTextAttention):
             count = positions.new_zeros(())
         return SparseAttentionOutput(out, loss, count)
 
+    @staticmethod
+    def _kernel_indices(indices: torch.Tensor, key_len: int) -> torch.Tensor:
+        """Pass the selected token positions to the portable kernel."""
+        del key_len
+        return indices
+
+    def _prefix_bank(self, bank: torch.Tensor) -> torch.Tensor:
+        """Return the projected inputs visible to the document queries."""
+        return bank
+
     def forward(
         self, hidden_states: torch.Tensor, *, fragments: tuple[DocumentFragment, ...],
-        local_start: int, cp: CPContext | None, indexer_mode: str,
+        local_start: int, indexer_mode: str,
     ) -> SparseAttentionOutput:
-        """Run document-local attention with differentiable gathering of remote KV and pool inputs."""
+        """Run document-local attention over the available prefixes."""
         residual, query, value_weight = self._project_query(hidden_states)
         kv = self.kv_a_layernorm(self.kv_a_proj_with_mqa(hidden_states))
         index_query, index_key, gates, weights = self._index_states(hidden_states, residual, indexer_mode != "frozen")
-        bank = torch.cat((kv, index_key, gates), dim=-1)
-        if cp is not None:
-            bank, _ = cp.gather_sequence(bank)
+        bank = self._prefix_bank(torch.cat((kv, index_key, gates), dim=-1))
         key_bank, index_bank, gate_bank = bank.split(
             (self.kv_lora_rank, self.indexer.head_dim, self.indexer.head_dim), dim=-1,
         )
-        # Idle shards must reach the same gather backward as shards with real queries.
+        # Empty query windows still keep the projected inputs in the backward graph.
         anchor = bank[:, :0].sum()
         loss = anchor.float() + index_query[:, :0].sum(dtype=torch.float32) + weights[:, :0].sum()
         if indexer_mode != "frozen":

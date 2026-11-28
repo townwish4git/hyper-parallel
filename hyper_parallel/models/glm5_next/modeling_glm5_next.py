@@ -16,7 +16,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable
 from copy import copy
 from dataclasses import dataclass
 from math import isfinite
@@ -25,7 +25,7 @@ from typing import Any
 import torch
 from torch import nn
 from transformers import Glm5NextConfig
-from transformers.conversion_mapping import get_checkpoint_conversion_mapping, register_checkpoint_conversion_mapping
+from transformers.models.glm5_next.configuration_glm5_next import Glm5NextTextConfig
 from transformers.utils import ModelOutput
 from transformers.models.glm5_next.modeling_glm5_next import (
     Glm5NextForConditionalGeneration,
@@ -43,7 +43,6 @@ from hyper_parallel.components.losses.chunked_cross_entropy import chunked_cross
 from hyper_parallel.components.modules.attention.linear_attention_utils.sequence_layout import PackedSequenceInfo
 from hyper_parallel.components.ops import causal_conv1d, kda
 from hyper_parallel.data.constants import IGNORE_INDEX
-from hyper_parallel.distributed.context_parallel.cp_context import CPContext
 from hyper_parallel.models.materialization import register_rebuildable_buffer
 from hyper_parallel.models.glm5_next.sparse_attention import (
     DocumentFragment, Glm5NextSparseAttention, SparseAttentionOutput,
@@ -71,7 +70,7 @@ def future_positions(values: torch.Tensor, offsets: tuple[int, ...], distance: i
 
 @dataclass(frozen=True)
 class DecoderInput:
-    """Document resets and this rank's query interval after modality fusion."""
+    """Document resets and the query interval after modality fusion."""
 
     offsets: tuple[int, ...]
     fragments: tuple[DocumentFragment, ...]
@@ -107,7 +106,7 @@ class Glm5NextPackedKDA(Glm5NextTextLinearAttention):
     """GLM parameters and split short convolutions with HyperParallel packed KDA."""
 
     def forward(
-        self, hidden_states: torch.Tensor, *, geometry: DecoderInput, cp: CPContext | None,
+        self, hidden_states: torch.Tensor, *, geometry: DecoderInput,
     ) -> torch.Tensor:
         """Reset the convolution and recurrence at each global document start."""
         forget = self.forget_gate
@@ -115,30 +114,45 @@ class Glm5NextPackedKDA(Glm5NextTextLinearAttention):
         projected = tuple(tensor.unflatten(-1, (self.num_heads, self.head_dim)) for tensor in (
             self.q_proj(hidden_states), self.k_proj(hidden_states), self.v_proj(hidden_states), decay,
         ))
-        head_start, head_stop = 0, self.num_heads
         beta = self.b_proj(hidden_states).unsqueeze(-1)
-        if cp is not None:
-            if self.num_heads % cp.size != 0:
-                raise ValueError("GLM KDA heads must divide evenly across the Ulysses CP group")
-            heads = self.num_heads // cp.size
-            head_start, head_stop = cp.rank * heads, (cp.rank + 1) * heads
-            exchanged = cp.sequence_to_head(torch.cat((*projected, beta), dim=-1))
-            *projected, beta = exchanged.split((self.head_dim,) * 4 + (1,), dim=-1)
-        info = PackedSequenceInfo(geometry.offsets, 0, projected[0].shape[1])
+        result = self._run_recurrence(projected, beta, geometry.offsets)
+        gate = self.g_b_proj(self.g_a_proj(hidden_states)).unflatten(-1, (self.num_heads, self.head_dim))
+        return self.o_proj(self.o_norm(result, gate).flatten(2))
+
+    def _run_recurrence(
+        self, projected: tuple[torch.Tensor, ...], beta: torch.Tensor, offsets: tuple[int, ...],
+    ) -> torch.Tensor:
+        return self._apply_recurrence(projected, beta, offsets, 0, self.num_heads)
+
+    def _apply_recurrence(
+        self, projected: tuple[torch.Tensor, ...], beta: torch.Tensor, offsets: tuple[int, ...],
+        head_start: int, head_stop: int,
+    ) -> torch.Tensor:
+        info = PackedSequenceInfo(offsets, 0, projected[0].shape[1])
+        forget = self.forget_gate
         begin, end = head_start * self.head_dim, head_stop * self.head_dim
         streams = tuple(
             causal_conv1d(tokens.flatten(2).to(weight.dtype), weight[begin:end], None, info)
             .to(tokens.dtype).unflatten(-1, (head_stop - head_start, self.head_dim))
             for tokens, weight in zip(projected[:3], self.conv1d.weight.chunk(3, dim=0))
         )
-        result = kda(
+        return kda(
             *streams, projected[3], beta.squeeze(-1), a_log=forget.A_log[head_start:head_stop],
             dt_bias=forget.dt_bias[begin:end], lower_bound=forget.safe_gate_lower_bound, info=info,
         )
-        if cp is not None:
-            result = cp.head_to_sequence(result)
-        gate = self.g_b_proj(self.g_a_proj(hidden_states)).unflatten(-1, (self.num_heads, self.head_dim))
-        return self.o_proj(self.o_norm(result, gate).flatten(2))
+
+
+AttentionFactory = Callable[[Glm5NextTextConfig, int], nn.Module]
+
+
+def build_text_attention(
+    config: Glm5NextTextConfig, layer_idx: int, *,
+    linear: AttentionFactory = Glm5NextPackedKDA, sparse: AttentionFactory = Glm5NextSparseAttention,
+) -> nn.Module:
+    """Build the configured attention role, including sparse attention in MTP."""
+    if layer_idx < config.num_hidden_layers and config.layer_types[layer_idx] == "linear_attention":
+        return linear(config, layer_idx)
+    return sparse(config, layer_idx)
 
 
 def _residual_update(
@@ -156,28 +170,27 @@ def _residual_update(
 class Glm5NextTrainingDecoderLayer(Glm5NextTextDecoderLayer):
     """One pretrained GLM layer with document-aware KDA or sparse attention."""
 
-    def __init__(self, config: Any, layer_idx: int) -> None:
+    def __init__(
+        self, config: Glm5NextTextConfig, layer_idx: int, attention_factory: AttentionFactory = build_text_attention,
+    ) -> None:
         """Build one layer with the published norms and residual streams."""
         super().__init__(config, layer_idx)
-        self.self_attn = (
-            Glm5NextPackedKDA(config, layer_idx) if self.block_type == "linear_attention"
-            else Glm5NextSparseAttention(config, layer_idx)
-        )
+        self.self_attn = attention_factory(config, layer_idx)
 
     def forward(
-        self, hidden: torch.Tensor, *, geometry: DecoderInput, cp: CPContext | None,
+        self, hidden: torch.Tensor, *, geometry: DecoderInput,
         indexer_mode: str,
     ) -> SparseAttentionOutput:
         """Run both four-stream residual sublayers and return this layer's KPool loss."""
         post, combine, attention = self.attn_hc(hidden)
         attention = self.input_layernorm(attention)
         if self.block_type == "linear_attention":
-            attention = self.self_attn(attention, geometry=geometry, cp=cp)
+            attention = self.self_attn(attention, geometry=geometry)
             result = SparseAttentionOutput(attention, attention.new_zeros((), dtype=torch.float32),
                                            attention.new_zeros((), dtype=torch.long))
         else:
             result = self.self_attn(
-                attention, fragments=geometry.fragments, local_start=geometry.start, cp=cp, indexer_mode=indexer_mode,
+                attention, fragments=geometry.fragments, local_start=geometry.start, indexer_mode=indexer_mode,
             )
         hidden = _residual_update(self.attn_hc, hidden, result.hidden, post, combine)
         post, combine, mlp_input = self.ffn_hc(hidden)
@@ -189,7 +202,7 @@ class Glm5NextTrainingDecoderLayer(Glm5NextTextDecoderLayer):
 class Glm5NextTrainingMTP(nn.Module):
     """Checkpoint layer 45 with ordinary residuals and the main model's shared vocabulary head."""
 
-    def __init__(self, config: Any) -> None:
+    def __init__(self, config: Glm5NextTextConfig, attention_factory: AttentionFactory = build_text_attention) -> None:
         """Build the separate MTP norms, next-token projection, attention and experts."""
         super().__init__()
         auxiliary = copy(config)
@@ -200,20 +213,20 @@ class Glm5NextTrainingMTP(nn.Module):
         self.eh_proj = nn.Linear(2 * width, width, bias=False)
         self.input_layernorm = Glm5NextTextRMSNorm(width, eps)
         self.post_attention_layernorm = Glm5NextTextRMSNorm(width, eps)
-        self.self_attn = Glm5NextSparseAttention(auxiliary, config.num_hidden_layers)
+        self.self_attn = attention_factory(auxiliary, config.num_hidden_layers)
         self.mlp = Glm5NextTextMoE(config)
         self.shared_head = nn.Module()
         self.shared_head.norm = Glm5NextTextRMSNorm(width, eps)
 
     def forward(
         self, hidden: torch.Tensor, next_embedding: torch.Tensor, *, geometry: DecoderInput,
-        cp: CPContext | None, indexer_mode: str,
+        indexer_mode: str,
     ) -> SparseAttentionOutput:
         """Fuse the next visual/text embedding and predict two tokens ahead."""
         hidden = self.eh_proj(torch.cat((self.enorm(next_embedding), self.hnorm(hidden)), dim=-1))
         result = self.self_attn(
             self.input_layernorm(hidden), fragments=geometry.fragments, local_start=geometry.start,
-            cp=cp, indexer_mode=indexer_mode,
+            indexer_mode=indexer_mode,
         )
         hidden = hidden + result.hidden
         hidden = self.shared_head.norm(hidden + self.mlp(self.post_attention_layernorm(hidden)))
@@ -223,38 +236,38 @@ class Glm5NextTrainingMTP(nn.Module):
 class _TrainingLanguageModel(Glm5NextPreTrainedModel):
     """Build the complete decoder and its MTP block before parallel replacements."""
 
-    def __init__(self, config: Any) -> None:
+    def __init__(self, config: Glm5NextTextConfig, attention_factory: AttentionFactory) -> None:
         super().__init__(config)
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, config.pad_token_id)
         self.layers = nn.ModuleList(
-            Glm5NextTrainingDecoderLayer(config, index) for index in range(config.num_hidden_layers)
+            Glm5NextTrainingDecoderLayer(config, index, attention_factory) for index in range(config.num_hidden_layers)
         )
-        self.layers.append(Glm5NextTrainingMTP(config))
+        self.layers.append(Glm5NextTrainingMTP(config, attention_factory))
         self.norm = Glm5NextTextRMSNorm(config.hidden_size, config.rms_norm_eps)
         self.hc_head = Glm5NextTextHyperHead()
         self.post_init()
 
     def forward(
         self, embeddings: torch.Tensor, next_embedding: torch.Tensor, *,
-        geometry: DecoderInput, cp: CPContext | None, indexer_mode: str,
+        geometry: DecoderInput, indexer_mode: str,
     ) -> tuple[torch.Tensor, SparseAttentionOutput]:
         hidden = embeddings.unsqueeze(2).expand(-1, -1, self.config.hc_mult, -1).contiguous()
         loss = hidden.new_zeros((), dtype=torch.float32)
         count = hidden.new_zeros((), dtype=torch.long)
         for layer in self.layers[:-1]:
-            result = layer(hidden, geometry=geometry, cp=cp, indexer_mode=indexer_mode)
+            result = layer(hidden, geometry=geometry, indexer_mode=indexer_mode)
             hidden = result.hidden
             loss = loss + result.indexer_loss
             count = count + result.indexer_count
         main = self.norm(self.hc_head(hidden))
-        mtp = self.layers[-1](main, next_embedding, geometry=geometry, cp=cp, indexer_mode=indexer_mode)
+        mtp = self.layers[-1](main, next_embedding, geometry=geometry, indexer_mode=indexer_mode)
         return main, SparseAttentionOutput(mtp.hidden, loss + mtp.indexer_loss, count + mtp.indexer_count)
 
 
 class _TrainingMultimodalModel(Glm5NextModel):
     """Keep the upstream media getters and placeholder conventions."""
 
-    def __init__(self, config: Glm5NextConfig) -> None:
+    def __init__(self, config: Glm5NextConfig, attention_factory: AttentionFactory) -> None:
         # Reuse HF media and checkpoint methods with the complete training module tree.
         Glm5NextPreTrainedModel.__init__(self, config)  # pylint: disable=non-parent-init-called
         self.visual = Glm5NextVisionModel._from_config(config.vision_config)  # pylint: disable=protected-access
@@ -263,7 +276,7 @@ class _TrainingMultimodalModel(Glm5NextModel):
             inv_freq, _ = rotary.compute_axial_rope_parameters(config.vision_config)
         for name in ("inv_freq", "original_inv_freq"):
             register_rebuildable_buffer(rotary, name, value=inv_freq)
-        self.language_model = _TrainingLanguageModel(config.text_config)
+        self.language_model = _TrainingLanguageModel(config.text_config, attention_factory)
         self.post_init()
 
 
@@ -282,15 +295,16 @@ class Glm5NextTrainingModel(Glm5NextForConditionalGeneration):
     _keys_to_ignore_on_load_unexpected = []
     _no_split_modules = ["Glm5NextTrainingDecoderLayer", "Glm5NextTrainingMTP", "Glm5NextVisionBlock"]
 
-    def __init__(self, config: Glm5NextConfig, cp: CPContext | None = None) -> None:
+    def __init__(
+        self, config: Glm5NextConfig, *, attention_factory: AttentionFactory = build_text_attention,
+    ) -> None:
         """Construct the full training model and configure indexer gradient ownership."""
         # Reuse HF media and checkpoint methods with the complete training module tree.
         Glm5NextPreTrainedModel.__init__(self, config)  # pylint: disable=non-parent-init-called
         text = config.text_config
         if text.num_nextn_predict_layers != 1:
             raise ValueError("GLM-5.3-Flash training expects one additional prediction layer")
-        self.cp = cp
-        self.model = _TrainingMultimodalModel(config)
+        self.model = _TrainingMultimodalModel(config, attention_factory)
         self.lm_head = nn.Linear(text.hidden_size, text.vocab_size, bias=False)
         self.indexer_mode = getattr(config, "hp_indexer_mode", "frozen")
         self.mtp_weight = getattr(config, "hp_mtp_weight", 0.1)
@@ -361,6 +375,14 @@ class Glm5NextTrainingModel(Glm5NextForConditionalGeneration):
         }
         return Glm5NextTrainingOutput(loss=losses, extra_metrics=statistics)
 
+    def _prepare_tokens(
+        self, input_ids: torch.Tensor, attention_mask: torch.Tensor | None, *,
+        labels: torch.Tensor | None, shift_labels: torch.Tensor | None,
+    ) -> tuple[torch.Tensor, torch.Tensor | None, int, int]:
+        """Return the tokens for media fusion and the decoder's query window."""
+        del labels, shift_labels
+        return input_ids, attention_mask, 0, input_ids.shape[1]
+
     def forward(
         self, input_ids: torch.Tensor, attention_mask: torch.Tensor | None = None,
         labels: torch.Tensor | None = None, shift_labels: torch.Tensor | None = None,
@@ -369,7 +391,7 @@ class Glm5NextTrainingModel(Glm5NextForConditionalGeneration):
         image_grid_thw: torch.Tensor | None = None, pixel_values_videos: torch.Tensor | None = None,
         video_grid_thw: torch.Tensor | None = None, use_cache: bool = False, **kwargs: Any,
     ) -> Glm5NextTrainingOutput:
-        """Fuse full media embeddings before handing contiguous CP shards to the decoder."""
+        """Fuse media embeddings and compute the main LM, MTP and KPool objectives."""
         del kwargs
         if use_cache or input_ids.ndim != 2 or input_ids.shape[0] != 1:
             raise ValueError("GLM training requires one packed input row and use_cache=False")
@@ -377,23 +399,15 @@ class Glm5NextTrainingModel(Glm5NextForConditionalGeneration):
             raise ValueError("GLM attention_mask must have the same shape as input_ids")
         if (shift_labels is None) != (mtp_labels is None):
             raise ValueError("GLM requires both pre-shifted targets when either is provided")
-        if labels is not None and shift_labels is None and self.cp is not None:
-            raise ValueError("CP training requires globally shifted labels from Glm5NextBatch")
-        start, stop = 0, input_ids.shape[1]
-        if self.cp is not None:
-            fields = input_ids if attention_mask is None else torch.cat((input_ids, attention_mask.to(input_ids)), 0)
-            fields, partition = self.cp.gather_sequence(fields)
-            start = partition.offset
-            stop = start + input_ids.shape[1]
-            input_ids = fields[:1]
-            if attention_mask is not None:
-                attention_mask = fields[1:].bool()
+        input_ids, attention_mask, start, stop = self._prepare_tokens(
+            input_ids, attention_mask, labels=labels, shift_labels=shift_labels,
+        )
         offsets = document_bounds(input_ids.shape[1], packed_doc_bounds)
         geometry = _decoder_input(offsets, attention_mask, start, stop)
         embeddings = self._embed(input_ids, pixel_values, image_grid_thw, pixel_values_videos, video_grid_thw)
         future = future_positions(embeddings, geometry.offsets, 1, 0)
         hidden, mtp = self.model.language_model(
-            embeddings[:, start:stop], future[:, start:stop], geometry=geometry, cp=self.cp,
+            embeddings[:, start:stop], future[:, start:stop], geometry=geometry,
             indexer_mode=self.indexer_mode,
         )
         if labels is None and shift_labels is None:
@@ -410,16 +424,6 @@ class Glm5NextTrainingModel(Glm5NextForConditionalGeneration):
         return self._losses(hidden, mtp, shift_labels, mtp_labels, denominator.clamp_min(1))
 
 
-# Transformers applies conversions to custom architectures only when registered explicitly.
-register_checkpoint_conversion_mapping(
-    Glm5NextTrainingModel.__name__, get_checkpoint_conversion_mapping("glm5_next"), overwrite=True,
-)
-
-
-def construct_model(
-    config: Glm5NextConfig, *, context: Mapping[str, Any] | None = None,
-) -> Glm5NextTrainingModel:
-    """Bind model-owned CP transport to HyperParallel's existing mesh."""
-    mesh = (context or {}).get("mesh")
-    cp = CPContext(mesh.cp_mesh) if mesh is not None and mesh.cp_size > 1 else None
-    return Glm5NextTrainingModel(config, cp=cp)
+def construct_model(config: Glm5NextConfig) -> Glm5NextTrainingModel:
+    """Build the standalone training architecture."""
+    return Glm5NextTrainingModel(config)

@@ -64,7 +64,7 @@ class OmniParallelBatch:
             mesh_context: Trainer mesh exposing TP, CP, and PP sizes.
             device: Destination model device.
             pp_shared_data: Whether pipeline stages share the source batch.
-            runtime_input_adapter: Provider of additional forward inputs.
+            runtime_input_adapter: Optional source, forward and loss input provider.
             data_config: Dataset cache settings used by DataLoader ownership.
             dataloader_context: Shared ownership and transport policy from the Trainer.
         """
@@ -91,7 +91,10 @@ class OmniParallelBatch:
         self.device = device
         self.sequence_parallel = bool(mesh_context.sequence_parallel)
         self.runtime_input_adapter = runtime_input_adapter
-        self.cp_sharder = CPBatchSharder(self.parallel_context, token_fields=OMNI_CP_TOKEN_FIELDS)
+        token_fields = OMNI_CP_TOKEN_FIELDS
+        if runtime_input_adapter is not None:
+            token_fields = token_fields.union(runtime_input_adapter.cp_token_fields())
+        self.cp_sharder = CPBatchSharder(self.parallel_context, token_fields=token_fields)
         self.tp_broadcaster = TPBatchBroadcaster(self.parallel_context, device)
         self.batch_transport = None
         self._batch_index = 0
@@ -112,6 +115,8 @@ class OmniParallelBatch:
                 raise TypeError("Omni DataLoader must yield a mapping batch")
 
             normalized_batch = self._normalize_source_batch(source_batch)
+            if self.runtime_input_adapter is not None:
+                normalized_batch = self.runtime_input_adapter.prepare_source_batch(normalized_batch)
             local_batch = self.cp_sharder.shard(normalized_batch)
             logger.debug(
                 "Omni get_batch: batch=%d source_ready global_shape=%s local_shape=%s tp=%d cp=%d cp_rank=%d",
@@ -127,6 +132,8 @@ class OmniParallelBatch:
             device_batch, transport_inputs = self.batch_transport(local_batch, self.tp_broadcaster)
         runtime_inputs = self._build_runtime_inputs(device_batch)
         model_inputs, loss_inputs = self._split_model_and_loss_inputs(device_batch)
+        if self.runtime_input_adapter is not None:
+            loss_inputs = self.runtime_input_adapter.prepare_loss_inputs(batch=device_batch, loss_inputs=loss_inputs)
         if set(transport_inputs).intersection((*device_batch, *runtime_inputs)):
             raise ValueError("batch transport cannot replace Omni model or runtime inputs")
         model_inputs.update(runtime_inputs)

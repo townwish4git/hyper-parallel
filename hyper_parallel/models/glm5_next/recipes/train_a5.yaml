@@ -82,7 +82,9 @@ dataset:
 dataloader:
   _target_: hyper_parallel.data.batching.FixedBatchDataLoader
   get_batch:
-    _target_: hyper_parallel.models.glm5_next.adapter.data.Glm5NextBatch
+    _target_: hyper_parallel.data.batching.OmniParallelBatch
+    runtime_input_adapter:
+      _target_: hyper_parallel.models.glm5_next.adapter.data.Glm5NextRuntimeInputs
   collate_fn:
     _target_: hyper_parallel.data.batching.build_omni_collate_fn
   sampler_type: single

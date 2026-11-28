@@ -21,13 +21,28 @@ from typing import Any
 
 import torch
 from torch import nn
+from torch.nn import functional as F
 from transformers.models.glm5_next.modeling_glm5_next import Glm5NextVisionAttention
 
 from hyper_parallel.components.functional.mhc_pre import mhc_pre
 from hyper_parallel.components.modules.mhc.pipelined_mhc import PipelinedMhcModule
 from hyper_parallel.components.modules.swiglu_mlp_family import swiglu_activation
-from hyper_parallel.components.ops import mhc_post, rope_qk, vision_attention
+from hyper_parallel.components.ops import deepseek_sparse_attention_absorbed, mhc_post, rope_qk, vision_attention
+from hyper_parallel.models.glm5_next.sparse_attention import Glm5NextSparseAttention
 from hyper_parallel.models.replacement import module_replacement
+
+
+class Glm5NextAlignedSparseAttention(Glm5NextSparseAttention):
+    """Prepare indices for the A5 kernel contract and native shared-bank path."""
+
+    _attention_kernel = staticmethod(deepseek_sparse_attention_absorbed)
+
+    @staticmethod
+    def _kernel_indices(indices: torch.Tensor, key_len: int) -> torch.Tensor:
+        # Keep all selected tokens, including the tail, ahead of the sentinels.
+        ordered = indices.masked_fill(indices < 0, key_len).sort(-1).values
+        ordered = ordered.masked_fill(ordered == key_len, -1)
+        return F.pad(ordered, (0, -ordered.shape[-1] % 1024), value=-1)
 
 
 class GlmVisionAttention(Glm5NextVisionAttention):

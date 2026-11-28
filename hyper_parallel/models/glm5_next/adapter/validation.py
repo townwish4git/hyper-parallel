@@ -38,9 +38,7 @@ from hyper_parallel.models.validation_spec import (
 class _HfPackedKDA(hf.Glm5NextTextLinearAttention):
     """Evaluate each packed document using the unchanged HF recurrent model."""
 
-    def forward(self, hidden_states: torch.Tensor, *, geometry: DecoderInput, cp: Any) -> torch.Tensor:
-        if cp is not None:
-            raise ValueError("HF KDA parity runs without CP")
+    def forward(self, hidden_states: torch.Tensor, *, geometry: DecoderInput) -> torch.Tensor:
         with patch.object(hf, "chunk_kimi_delta_attention", hf.recurrent_kimi_delta_attention):
             forward = super().forward
             parts = [forward(hidden_states[:, lo:hi])
@@ -53,9 +51,9 @@ class _HfNoPE(hf.Glm5NextTextAttention):
 
     def forward(
         self, hidden_states: torch.Tensor, *, fragments: tuple[DocumentFragment, ...],
-        local_start: int, cp: Any, indexer_mode: str,
+        local_start: int, indexer_mode: str,
     ) -> SparseAttentionOutput:
-        if cp is not None or local_start != 0 or indexer_mode != "frozen" or len(fragments) != 1:
+        if local_start != 0 or indexer_mode != "frozen" or len(fragments) != 1:
             raise ValueError("HF NoPE parity expects one unpadded document")
         valid = torch.ones_like(hidden_states[..., 0], dtype=torch.bool)
         output = super().forward(hidden_states, attention_mask=valid)[0]
@@ -98,7 +96,7 @@ def _parity_inputs(context: Any, *, packed: bool) -> dict[str, Any]:
     kwargs = ({"geometry": DecoderInput((0, 65, length), (), 0, length)}
               if packed else {"fragments": (DocumentFragment(0, length, 0),),
                               "local_start": 0, "indexer_mode": "frozen"})
-    return {"args": (value.requires_grad_(),), "kwargs": dict(kwargs, cp=None)}
+    return {"args": (value.requires_grad_(),), "kwargs": kwargs}
 
 
 def _kda_inputs(context: Any) -> dict[str, Any]:

@@ -7,7 +7,7 @@ model:
     indexer_mode: sparse
 launcher:
   module: scripts.train_vl
-  config: ../../../examples/training_demo/glm5_next/train_a5.yaml
+  config: recipes/train_a5.yaml
   timeout_seconds: 3600
 matrix:
   devices: 4

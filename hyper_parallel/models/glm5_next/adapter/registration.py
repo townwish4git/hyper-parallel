@@ -85,6 +85,6 @@ register_model_adapter(MODEL_ADAPTER_SPEC)
 
 register_custom_model(
     "Glm5NextForConditionalGeneration",
-    "hyper_parallel.models.glm5_next.modeling_glm5_next",
+    "hyper_parallel.models.glm5_next.adapter.build",
     "Glm5NextTrainingModel",
 )

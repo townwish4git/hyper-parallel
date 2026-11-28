@@ -40,3 +40,13 @@ def test_ascendc_symmetric_matmul() -> None:
     worker = str(Path(__file__).with_name("_test_ascendc_symmetric_matmul.py"))
     with patch.dict(os.environ, {"CLOSE_MATMUL_K_SHIFT": "1", "TASK_QUEUE_ENABLE": "1"}):
         torchrun_case(worker, "test_ascendc_symmetric_matmul", num_proc=1)
+
+
+@pytest.mark.skipif(not _LIBRARY.is_file(), reason="requires the compiled Ascend C libraries")
+@arg_mark(plat_marks=["platform_ascend", "platform_ascend910b"], level_mark="level1",
+          card_mark="onecard", essential_mark="essential")
+def test_ascendc_fused_ns_step() -> None:
+    """Exercise fused Newton–Schulz on Ascend A2, A3, and A5."""
+    worker = str(Path(__file__).with_name("_test_ascendc_symmetric_matmul.py"))
+    with patch.dict(os.environ, {"CLOSE_MATMUL_K_SHIFT": "1", "TASK_QUEUE_ENABLE": "1"}):
+        torchrun_case(worker, "test_ascendc_fused_ns_step", num_proc=1)

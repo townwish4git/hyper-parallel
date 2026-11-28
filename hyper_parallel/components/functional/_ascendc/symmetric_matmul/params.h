@@ -23,3 +23,20 @@ struct SymmetricPlan {
 };
 
 SymmetricPlan make_plan(int n, int k, int batch, int dtype, bool trans_a, bool trans_b);
+
+constexpr int kVectorTile = 64;
+constexpr int kCubeTile = 256;
+
+struct FusedNsPlan {
+  SymmetricPlan gram;
+  SymmetricPlan square;
+  uint32_t update_tiling[96];
+  float a;
+  float b;
+  float c;
+};
+
+// Ascend 910B limits each kernel's argument payload, including the four GM addresses.
+static_assert(sizeof(FusedNsPlan) + 4 * sizeof(uint64_t) <= 1536);
+
+FusedNsPlan make_fused_ns_plan(int n, int k, int batch);

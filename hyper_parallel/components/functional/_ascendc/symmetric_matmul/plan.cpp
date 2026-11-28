@@ -16,7 +16,8 @@
 namespace {
 using CubeTiling = AscendC::tiling::TCubeTiling;
 
-bool make_tiling(int n, int k, int rows, int columns, int dtype, bool trans_a, bool trans_b, CubeTiling &result) {
+bool make_tiling(int m, int n, int k, int rows, int columns, int dtype, bool trans_a, bool trans_b,
+                 CubeTiling &result) {
   auto *platform = platform_ascendc::PlatformAscendCManager::GetInstance();
   matmul_tiling::MatmulApiTiling tiler(*platform);
   using matmul_tiling::CubeFormat;
@@ -27,7 +28,7 @@ bool make_tiling(int n, int k, int rows, int columns, int dtype, bool trans_a, b
   tiler.SetBType(TPosition::GM, CubeFormat::ND, type, trans_b);                          // codespell:ignore nd
   tiler.SetCType(TPosition::GM, CubeFormat::ND, type);  // codespell:ignore nd
   tiler.SetShape(rows, columns, k);
-  tiler.SetOrgShape(n, n, k);
+  tiler.SetOrgShape(m, n, k);
   tiler.SetMatmulConfigParams(1);
   tiler.SetBias(false);
   tiler.SetBufferSpace(-1, -1, -1);
@@ -40,9 +41,9 @@ SymmetricPlan make_plan(int n, int k, int batch, int dtype, bool trans_a, bool t
   SymmetricPlan plan{};
   auto *platform = platform_ascendc::PlatformAscendCManager::GetInstance();
   if (platform == nullptr) return plan;
-  int tile = std::min(n, 256);
+  int tile = std::min(n, kCubeTile);
   CubeTiling tiling;
-  if (!make_tiling(n, k, tile, tile, dtype, trans_a, trans_b, tiling)) return plan;
+  if (!make_tiling(n, n, k, tile, tile, dtype, trans_a, trans_b, tiling)) return plan;
   plan.n = n;
   plan.k = k;
   plan.batch = batch;
@@ -56,3 +57,27 @@ SymmetricPlan make_plan(int n, int k, int batch, int dtype, bool trans_a, bool t
   std::memcpy(plan.tiling, &tiling, sizeof(tiling));
   return plan;
 }
+
+#ifdef HP_ENABLE_FUSED_NS
+FusedNsPlan make_fused_ns_plan(int n, int k, int batch) {
+  FusedNsPlan plan{};
+  constexpr int bf16 = 1;
+  plan.gram = make_plan(n, k, batch, bf16, false, true);
+  plan.square = make_plan(n, n, batch, bf16, false, false);
+  CubeTiling tiling;
+  if (plan.gram.cores == 0 || plan.square.cores == 0 ||
+      !make_tiling(n, k, n, plan.gram.tile, std::min(k, kCubeTile), bf16, false, false, tiling)) {
+    plan.gram.cores = 0;
+    return plan;
+  }
+  // A wide update can use more cores than either triangular product.
+  const int row_tiles = (n + plan.gram.tile - 1) / plan.gram.tile;
+  const int col_tiles = (k + kCubeTile - 1) / kCubeTile;
+  auto *platform = platform_ascendc::PlatformAscendCManager::GetInstance();
+  plan.gram.cores = std::min<int64_t>(platform->GetCoreNumAic(), static_cast<int64_t>(batch) * row_tiles * col_tiles);
+  plan.square.cores = plan.gram.cores;
+  static_assert(sizeof(tiling) <= sizeof(plan.update_tiling));
+  std::memcpy(plan.update_tiling, &tiling, sizeof(tiling));
+  return plan;
+}
+#endif

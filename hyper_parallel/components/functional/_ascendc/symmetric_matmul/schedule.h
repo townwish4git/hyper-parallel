@@ -14,6 +14,44 @@
 #include "symmetric_matmul/params.h"
 using namespace AscendC;  // NOLINT(build/namespaces) CANN device intrinsics and templates.
 
+constexpr int kTileReadyFlag = 6;
+constexpr int kTileConsumedFlag = 8;
+
+__aicore__ inline void signal_tile_ready(int slot) {
+#if defined(__NPU_ARCH__) && __NPU_ARCH__ == 3510
+  // Mode 4 has separate flag banks for the two AIV consumers.
+  CrossCoreSetFlag<0x4, PIPE_FIX>(kTileReadyFlag + slot);
+  CrossCoreSetFlag<0x4, PIPE_FIX>(kTileReadyFlag + slot + 16);
+#else
+  CrossCoreSetFlag<0x2, PIPE_FIX>(kTileReadyFlag + slot);
+#endif
+}
+
+__aicore__ inline void wait_tile_ready(int slot) {
+#if defined(__NPU_ARCH__) && __NPU_ARCH__ == 3510
+  CrossCoreWaitFlag<0x4>(kTileReadyFlag + slot);
+#else
+  CrossCoreWaitFlag<0x2>(kTileReadyFlag + slot);
+#endif
+}
+
+__aicore__ inline void signal_tile_consumed(int slot) {
+#if defined(__NPU_ARCH__) && __NPU_ARCH__ == 3510
+  CrossCoreSetFlag<0x4, PIPE_MTE3>(kTileConsumedFlag + slot);
+#else
+  CrossCoreSetFlag<0x2, PIPE_MTE3>(kTileConsumedFlag + slot);
+#endif
+}
+
+__aicore__ inline void wait_tile_consumed(int slot) {
+#if defined(__NPU_ARCH__) && __NPU_ARCH__ == 3510
+  CrossCoreWaitFlag<0x4>(kTileConsumedFlag + slot);
+  CrossCoreWaitFlag<0x4>(kTileConsumedFlag + slot + 16);
+#else
+  CrossCoreWaitFlag<0x2>(kTileConsumedFlag + slot);
+#endif
+}
+
 __aicore__ inline void decode(int task, int tiles, int &batch, int &row, int &col) {
   int count = tiles * (tiles + 1) / 2;
   batch = task / count;

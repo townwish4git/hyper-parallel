@@ -12,6 +12,7 @@
 #include <ATen/core/grad_mode.h>
 #include <algorithm>
 #include <array>
+#include <limits>
 #include <map>
 #include <c10/core/DeviceGuard.h>
 #include <torch/library.h>
@@ -21,6 +22,9 @@
 #include "symmetric_matmul/params.h"
 
 extern "C" uint32_t aclrtlaunch_hp_symm_pipeline(uint32_t, void *, void *, void *, void *, SymmetricPlan *);
+#ifdef HP_ENABLE_FUSED_NS
+extern "C" uint32_t aclrtlaunch_hp_fused_ns_step(uint32_t, void *, void *, void *, void *, void *, FusedNsPlan *);
+#endif
 
 namespace {
 bool plain_format(const at::Tensor &x) {
@@ -100,11 +104,76 @@ at::Tensor symm_out(const at::Tensor &a, const at::Tensor &b, at::Tensor out) {
   if (!dst.is_same(out)) out.copy_(dst.narrow(-2, 0, n).narrow(-1, 0, n));
   return out;
 }
+
+#ifdef HP_ENABLE_FUSED_NS
+void check_ns_buffers(const at::Tensor &x, const at::Tensor &gram, const at::Tensor &poly, const at::Tensor &out) {
+  const std::array<const at::Tensor *, 4> tensors{&x, &gram, &poly, &out};
+  for (size_t index = 0; index < tensors.size(); ++index) {
+    const auto &tensor = *tensors[index];
+    TORCH_CHECK(tensor.device() == x.device() && tensor.scalar_type() == at::kBFloat16,
+                "fused Newton-Schulz expects all tensors on the same NPU with BF16 dtype");
+    TORCH_CHECK(tensor.is_contiguous() && aligned(tensor) && plain_format(tensor),
+                "fused Newton-Schulz expects 32-byte-aligned contiguous tensors with plain NPU storage");
+    TORCH_CHECK(!at::GradMode::is_enabled() || !tensor.requires_grad(), "fused Newton-Schulz is forward-only");
+    for (size_t previous = 0; previous < index; ++previous) {
+      TORCH_CHECK(!tensor.is_alias_of(*tensors[previous]), "fused Newton-Schulz buffers must have distinct storage");
+    }
+  }
+  TORCH_CHECK(x.dim() == 2 || x.dim() == 3, "fused Newton-Schulz expects a matrix or a matrix batch");
+  auto square_shape = x.sizes().vec();
+  square_shape.back() = x.size(-2);
+  const c10::IntArrayRef square_sizes(square_shape);
+  TORCH_CHECK(gram.sizes() == square_sizes && poly.sizes() == square_sizes && out.sizes() == x.sizes(),
+              "fused Newton-Schulz buffer shapes do not match the input");
+}
+
+at::Tensor fused_ns_step_out(const at::Tensor &x, double a, double b, double c,
+                             at::Tensor gram, at::Tensor poly, at::Tensor out) {
+  c10::DeviceGuard guard(x.device());
+  check_ns_buffers(x, gram, poly, out);
+  const int64_t n = x.size(-2), k = x.size(-1);
+  constexpr int64_t max_stride = std::numeric_limits<uint16_t>::max() * 16L + kVectorTile;
+  TORCH_CHECK(x.numel() > 0 && x.numel() <= std::numeric_limits<int32_t>::max() &&
+              n <= k && k <= max_stride && n % kVectorTile == 0 && k % kVectorTile == 0,
+              "fused Newton-Schulz requires nonempty matrices with 64-aligned dimensions, n <= k and 32-bit indexing");
+  const int batch = x.dim() == 2 ? 1 : static_cast<int>(x.size(0));
+  const std::array<int, 4> key{x.device().index(), static_cast<int>(n), static_cast<int>(k), batch};
+  static thread_local std::map<std::array<int, 4>, FusedNsPlan> cache;
+  auto it = cache.find(key);
+  if (it == cache.end()) {
+    auto plan = make_fused_ns_plan(n, k, batch);
+    TORCH_CHECK(plan.gram.cores > 0, "Ascend C fused Newton-Schulz tiling failed");
+    if (cache.size() >= 128) {
+      cache.clear();
+    }
+    it = cache.emplace(key, plan).first;
+  }
+  auto plan = it->second;
+  plan.a = static_cast<float>(a);
+  plan.b = static_cast<float>(b);
+  plan.c = static_cast<float>(c);
+  auto stream = c10_npu::getCurrentNPUStream(x.device().index());
+  auto raw_stream = stream.stream(false);
+  auto submit = [plan, raw_stream, x, gram, poly, out]() mutable -> int {
+    return aclrtlaunch_hp_fused_ns_step(plan.gram.cores, raw_stream, x.data_ptr(), gram.data_ptr(),
+                                      poly.data_ptr(), out.data_ptr(), &plan);
+  };
+  at_npu::native::OpCommand::RunOpApiV3("hp_fused_ns_step", submit, false, &stream);
+  return out;
+}
+#endif
 }  // namespace
 
 TORCH_LIBRARY_FRAGMENT(hyper_parallel, m) {
   m.def("symmetric_gemm_mirror.out(Tensor a, Tensor b, *, Tensor(a!) out) -> Tensor(a!)");
+#ifdef HP_ENABLE_FUSED_NS
+  m.def("fused_ns_step.out(Tensor x, float a, float b, float c, *, "
+        "Tensor(a!) gram, Tensor(b!) poly, Tensor(c!) out) -> Tensor(c!)");
+#endif
 }
 TORCH_LIBRARY_IMPL(hyper_parallel, PrivateUse1, m) {
   m.impl("symmetric_gemm_mirror.out", TORCH_FN(symm_out));
+#ifdef HP_ENABLE_FUSED_NS
+  m.impl("fused_ns_step.out", TORCH_FN(fused_ns_step_out));
+#endif
 }

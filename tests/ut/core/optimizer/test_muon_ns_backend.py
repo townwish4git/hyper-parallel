@@ -23,7 +23,7 @@ from unittest.mock import Mock, patch
 import torch
 
 from hyper_parallel.core.optimizer import get_hyper_optimizer
-from hyper_parallel.core.optimizer.muon import _NS_ASYM5_COEFFS, _NS_LEGACY_COEFFS
+from hyper_parallel.core.optimizer.muon import _NS_ASYM5_COEFFS, _NS_LEGACY_COEFFS, zeropower_via_newtonschulz5
 
 
 class TestMuonNSBackendFactory(unittest.TestCase):
@@ -69,11 +69,50 @@ class TestMuonNSBackendFactory(unittest.TestCase):
         self.assertIs(chain.optimizer.zeropower_fn, self.callback)
         self.builder.assert_not_called()
 
+    def test_ascendc_ns_fuses_configured_steps_and_reuses_buffers(self) -> None:
+        """Dispatch authentic Muon coefficients and use ping-pong storage on the fused path."""
+        coefficients = ((1.5, -0.5, 0.25), (1.25, -0.25, 0.125))
+        epsilon = 1e-6
+        config = {"ns_steps": 2, "ns_variant": "custom", "ns_coefficients": coefficients, "ns_epsilon": epsilon}
+        chain = get_hyper_optimizer(self.model, self.parameters, [], muon_kwargs=config, muon_ns_backend="ascendc")
+        inputs = torch.linspace(-0.5, 0.5, steps=24).reshape(6, 4)
+
+        def step(x, a, b, c, *, gram, poly, out):
+            torch.mm(x, x.mT, out=gram)
+            torch.mm(gram, gram, out=poly)
+            poly.mul_(c).add_(gram * b)
+            out.copy_(poly @ x + a * x)
+
+        with patch("hyper_parallel.core.optimizer.ascendc_ns._supports_fused_ns", return_value=True), patch(
+            "hyper_parallel.core.optimizer.ascendc_ns.ascendc_fused_ns_step_out", return_value=Mock(side_effect=step),
+        ) as load:
+            result = chain.optimizer.zeropower_fn(inputs, steps=2)
+
+        torch.testing.assert_close(result, zeropower_via_newtonschulz5(inputs, 2, "custom", epsilon, coefficients))
+        first, second = load.return_value.call_args_list
+        self.assertEqual(first.args[1:], coefficients[0])
+        self.assertEqual(second.args[1:], coefficients[1])
+        self.assertIs(first.kwargs["out"], second.args[0])
+        self.assertIs(first.args[0], second.kwargs["out"])
+        self.assertIs(first.kwargs["gram"], second.kwargs["gram"])
+        self.assertIs(first.kwargs["poly"], second.kwargs["poly"])
+
+    def test_ascendc_ns_uses_native_ns_on_cpu(self) -> None:
+        """CPU inputs preserve the native schedule without loading the device library."""
+        chain = get_hyper_optimizer(self.model, self.parameters, [], muon_ns_backend="ascendc")
+        inputs = torch.linspace(-0.5, 0.5, steps=24).reshape(6, 4)
+
+        with patch("hyper_parallel.core.optimizer.ascendc_ns.ascendc_fused_ns_step_out") as load:
+            actual = chain.optimizer.zeropower_fn(inputs, steps=2)
+
+        torch.testing.assert_close(actual, zeropower_via_newtonschulz5(inputs, steps=2), rtol=0, atol=0)
+        load.assert_not_called()
+
     def test_invalid_backend_and_callback_conflict(self) -> None:
         """Typos and conflicting explicit requests must fail before loading the backend."""
         with self.assertRaisesRegex(ValueError, "muon_ns_backend"):
             get_hyper_optimizer(self.model, self.parameters, [], muon_ns_backend="typo")
-        for backend in ("gram", "gram_quack"):
+        for backend in ("gram", "gram_quack", "ascendc"):
             with self.subTest(backend=backend), self.assertRaisesRegex(ValueError, f"'{backend}'.*zeropower_fn"):
                 get_hyper_optimizer(
                     self.model, self.parameters, [], muon_ns_backend=backend,

@@ -14,7 +14,7 @@
 
 template <class T>
 __aicore__ inline void transpose_tile(LocalTensor<T> &r, LocalTensor<T> &tr) {
-  constexpr int tile = 64;
+  constexpr int tile = kVectorTile;
   uint64_t sources[16], destinations[16];
   for (int block = 0; block < tile / 16; ++block) {
     for (int line = 0; line < 16; ++line) {
@@ -30,7 +30,7 @@ __aicore__ inline void transpose_tile(LocalTensor<T> &r, LocalTensor<T> &tr) {
 template <class T>
 __aicore__ inline void mirror(GM_ADDR out, const SymmetricPlan &plan) {
   TPipe pipe;
-  constexpr int tile = 64;
+  constexpr int tile = kVectorTile;
   TBuf<TPosition::VECCALC> rounded, transposed;
   pipe.InitBuffer(rounded, tile * tile * sizeof(T));
   pipe.InitBuffer(transposed, tile * tile * sizeof(T));
@@ -43,7 +43,7 @@ __aicore__ inline void mirror(GM_ADDR out, const SymmetricPlan &plan) {
   for (int task = GetBlockIdx() / 2; task < task_count(plan); task += plan.cores) {
     auto region = task_region(plan, task);
     if (!is_off_diagonal(region)) continue;
-    CrossCoreWaitFlag<0x2>(6 + iteration % 2);
+    wait_tile_ready(iteration % 2);
     int64_t base = static_cast<int64_t>(region.batch) * plan.n * plan.n;
     for (int i = GetSubBlockIdx() * tile; i < region.rows; i += 2 * tile) {
       int row = region.row + i;
@@ -56,7 +56,8 @@ __aicore__ inline void mirror(GM_ADDR out, const SymmetricPlan &plan) {
         PipeBarrier<PIPE_ALL>();
       }
     }
-    CrossCoreSetFlag<0x2, PIPE_MTE3>(8 + iteration % 2);
+    signal_tile_consumed(iteration % 2);
     ++iteration;
   }
+  pipe.Destroy();
 }

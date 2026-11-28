@@ -135,18 +135,20 @@ def _build_configured_optimizer(
     return optimizer
 
 
-def _configure_muon_gram_ns(optimizer: Any, resolve_coefficients: Callable[..., Any], backend: str) -> None:
-    """Bind the optional Gram callback from fully resolved Muon parameter groups."""
+def _configure_muon_ns(optimizer: Any, resolve_coefficients: Callable[..., Any], backend: str) -> None:
+    """Bind the optional backend callback from fully resolved Muon parameter groups."""
     if optimizer.zeropower_fn is not None:
         raise ValueError(f"muon_ns_backend={backend!r} cannot be combined with an explicit zeropower_fn")
     schedules = []
     for group in optimizer.param_groups:
         steps = group["ns_steps"]
         if not isinstance(steps, int) or isinstance(steps, bool) or steps <= 0:
-            raise ValueError(f"Gram Muon ns_steps must be a positive integer, got {steps!r}")
+            raise ValueError(f"muon_ns_backend={backend!r} requires a positive integer ns_steps, got {steps!r}")
         schedule = resolve_coefficients(steps, group["ns_variant"], group["ns_coefficients"])
         if steps > len(schedule):
-            raise ValueError(f"Gram Muon ns_steps={steps} exceeds the {len(schedule)} coefficient groups")
+            raise ValueError(
+                f"muon_ns_backend={backend!r}: ns_steps={steps} exceeds {len(schedule)} coefficient groups"
+            )
         schedules.append(schedule)
     coefficients = max(schedules, key=len)
     epsilon = optimizer.param_groups[0]["ns_epsilon"]
@@ -156,7 +158,11 @@ def _configure_muon_gram_ns(optimizer: Any, resolve_coefficients: Callable[..., 
                 f"muon_ns_backend={backend!r} requires compatible coefficient prefixes and the same "
                 "ns_epsilon across Muon parameter groups"
             )
-    # Optional CUDA dependencies stay off the native factory and optimizer import paths.
+    # Optional accelerator dependencies stay off the native factory and optimizer import paths.
+    if backend == "ascendc":
+        ascendc_ns = _import_module(".ascendc_ns", __name__)
+        optimizer.zeropower_fn = ascendc_ns.make_ascendc_newton_schulz(coefficients, epsilon=epsilon)
+        return
     gram_module = _import_module("hyper_parallel.components.functional.gram_newton_schulz")
     optimizer.zeropower_fn = gram_module.make_gram_newton_schulz(
         coefficients, epsilon=epsilon, use_kernels=False if backend == "gram" else None,
@@ -185,7 +191,9 @@ def get_hyper_optimizer(
         muon_ns_backend: ``"native"`` (default) preserves the configured Muon callback.
             ``"gram"`` uses the upstream Torch path on CPU/CUDA. ``"gram_quack"``
             enables Quack on Hopper/Blackwell CUDA and falls back to Torch on CPU
-            or other CUDA devices. Both bind the effective Muon group settings,
+            or other CUDA devices. ``"ascendc"`` uses fused BF16 steps for 64-aligned
+            matrices on Ascend A2, A3, and A5. It uses native NS for other inputs.
+            Optional backends bind the effective Muon group settings,
             require compatible coefficient prefixes and one epsilon across groups,
             and reject a manual ``zeropower_fn``. Ignored without Muon parameters.
         sinkhorn_params: Optional Sinkhorn groups. Empty or None disables Sinkhorn.
@@ -221,8 +229,10 @@ def get_hyper_optimizer(
 
         optimizer.step()
     """
-    if muon_ns_backend not in ("native", "gram", "gram_quack"):
-        raise ValueError(f"muon_ns_backend must be 'native', 'gram', or 'gram_quack', got {muon_ns_backend!r}")
+    if muon_ns_backend not in ("native", "gram", "gram_quack", "ascendc"):
+        raise ValueError(
+            f"muon_ns_backend must be 'native', 'gram', 'gram_quack', or 'ascendc', got {muon_ns_backend!r}"
+        )
     AdamW, Muon, ChainedOptimizer, detect_dtensor_backend, resolve_coefficients = _load_torch_optimizer_runtime()
 
     filtered_adamw_config = _filter_optimizer_config("adamw", AdamW, adamw_kwargs)
@@ -246,7 +256,7 @@ def get_hyper_optimizer(
             filtered_muon_config,
         )
         if muon_ns_backend != "native":
-            _configure_muon_gram_ns(optimizers["muon"], resolve_coefficients, muon_ns_backend)
+            _configure_muon_ns(optimizers["muon"], resolve_coefficients, muon_ns_backend)
         logger.info_rank0("Muon NS backend selection: %s", muon_ns_backend)
 
     if sinkhorn_params:

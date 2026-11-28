@@ -224,14 +224,14 @@ for nested callback configuration and Engram parameter groups. The examples
 configure optimizer hyperparameters; they do not reproduce the report's full
 training schedule. Resume with the same optimizer partition and head layout.
 
-## Optional Gram Newton-Schulz backend
+## Optional Newton-Schulz backends
 
-Set `muon_ns_backend` to select Gram NS with Quack acceleration:
+Set `muon_ns_backend` to select a backend. This example enables HyperParallel's fused Ascend C backend:
 
 ```python
 optimizer = get_hyper_optimizer(
     model, muon_params, adamw_params,
-    muon_ns_backend="gram_quack",
+    muon_ns_backend="ascendc",
 )
 ```
 
@@ -240,6 +240,9 @@ optimizer = get_hyper_optimizer(
 | `native` (default) | Native Muon NS or a configured `zeropower_fn`. |
 | `gram` | Upstream Torch operations on CPU and CUDA. |
 | `gram_quack` | Quack on Hopper/Blackwell CUDA when eligible. Uses the `gram` path on CPU and other CUDA devices. |
+| `ascendc` | Fused BF16 steps for eligible 64-aligned matrices on Ascend A2, A3, and A5. Other inputs use native Muon NS. |
+
+The `ascendc` backend is built into the HyperParallel wheel for the target SoC. [Build instructions and supported inputs](../../hyper_parallel/components/functional/README.md#fused-newton-schulz-for-muon).
 
 Both Gram options require `gram-newton-schulz` and support CPU/CUDA inputs.
 NPU inputs raise a device error. Dependency loading, compilation, and execution
@@ -250,7 +253,7 @@ The factory reads effective Muon parameter groups, including defaults and
 coefficients and epsilon, and binds the longest requested iteration schedule.
 Groups may use different step counts if their coefficient prefixes agree;
 incompatible schedules/epsilons and an explicit `zeropower_fn` raise an error.
-Empty Muon routing does not load the optional dependency. The factory uses
+Empty Muon routing does not load the optional backend. The Gram factory uses
 restart `(2,)` with compilation disabled. Use the manual factory below to
 customize restart, kernel selection, and compilation.
 

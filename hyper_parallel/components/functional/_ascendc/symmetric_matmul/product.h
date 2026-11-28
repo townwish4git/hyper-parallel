@@ -62,7 +62,14 @@ __aicore__ inline void produce_region(Matmul &mm, GlobalTensor<T> &a, GlobalTens
   mm.End();
 }
 
-template <class T, bool TransA, bool TransB>
+__aicore__ inline void load_cube_tiling(TCubeTiling &tiling, const uint32_t *data) {
+  auto *words = reinterpret_cast<uint32_t *>(&tiling);
+  for (uint32_t i = 0; i < sizeof(tiling) / sizeof(uint32_t); ++i) {
+    words[i] = data[i];
+  }
+}
+
+template <class T, bool TransA, bool TransB, bool NotifyAllTiles = false>
 __aicore__ inline void product(GM_ADDR a, GM_ADDR b, GM_ADDR out, SymmetricPlan &plan) {
   if ASCEND_IS_AIV {
     return;
@@ -77,8 +84,7 @@ __aicore__ inline void product(GM_ADDR a, GM_ADDR b, GM_ADDR out, SymmetricPlan 
   matmul::MatmulImpl<Left, Right, Result, Result, CFG_MDL> mm;
 #endif
   TCubeTiling tiling;
-  auto *words = reinterpret_cast<uint32_t *>(&tiling);
-  for (int i = 0; i < sizeof(tiling) / sizeof(uint32_t); ++i) words[i] = plan.tiling[i];
+  load_cube_tiling(tiling, plan.tiling);
   mm.SetSubBlockIdx(0);
   mm.Init(&tiling, &pipe);
   GlobalTensor<T> ga, gb;
@@ -87,25 +93,27 @@ __aicore__ inline void product(GM_ADDR a, GM_ADDR b, GM_ADDR out, SymmetricPlan 
   gb.SetGlobalBuffer(reinterpret_cast<__gm__ T *>(b));
   gc.SetGlobalBuffer(reinterpret_cast<__gm__ T *>(out));
   int tasks = task_count(plan);
-#if !defined(__NPU_ARCH__) || __NPU_ARCH__ != 3510
-  // Each ready/consumed slot is reused only after both AIVs finish mirroring.
-  int iteration = 0;
+#if defined(__NPU_ARCH__) && __NPU_ARCH__ == 3510
+  constexpr bool vector_mirror = false;
+#else
+  constexpr bool vector_mirror = true;
 #endif
+  // Both AIVs must acknowledge a tile before the flag slot can be reused.
+  int iteration = 0;
   for (int task = GetBlockIdx(); task < tasks; task += GetBlockNum()) {
     auto region = task_region(plan, task);
-#if !defined(__NPU_ARCH__) || __NPU_ARCH__ != 3510
-    const bool mirror = is_off_diagonal(region);
-    if (mirror && iteration >= 2) CrossCoreWaitFlag<0x2>(8 + iteration % 2);
-#endif
+    const bool notify = NotifyAllTiles || (vector_mirror && is_off_diagonal(region));
+    if (notify && iteration >= 2) {
+      wait_tile_consumed(iteration % 2);
+    }
     produce_region<TransA, TransB>(mm, ga, gb, gc, plan, region);
-#if !defined(__NPU_ARCH__) || __NPU_ARCH__ != 3510
-    if (mirror) {
-      CrossCoreSetFlag<0x2, PIPE_FIX>(6 + iteration % 2);
+    if (notify) {
+      signal_tile_ready(iteration % 2);
       ++iteration;
     }
-#endif
   }
-#if !defined(__NPU_ARCH__) || __NPU_ARCH__ != 3510
-  for (int slot = 0; slot < 2 && slot < iteration; ++slot) CrossCoreWaitFlag<0x2>(8 + slot);
-#endif
+  for (int slot = 0; slot < 2 && slot < iteration; ++slot) {
+    wait_tile_consumed(slot);
+  }
+  pipe.Destroy();
 }

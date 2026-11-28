@@ -194,14 +194,14 @@ for nested callback configuration and Engram parameter groups. The examples
 configure optimizer hyperparameters; they do not reproduce the report's full
 training schedule. Resume with the same optimizer partition and head layout.
 
-## 可选 Gram Newton-Schulz 后端
+## 可选 Newton-Schulz 后端
 
-通过 `muon_ns_backend` 选择带 Quack 加速的 Gram NS：
+通过 `muon_ns_backend` 选择后端。以下示例启用 HyperParallel 的 Ascend C 融合后端。
 
 ```python
 optimizer = get_hyper_optimizer(
     model, muon_params, adamw_params,
-    muon_ns_backend="gram_quack",
+    muon_ns_backend="ascendc",
 )
 ```
 
@@ -210,6 +210,9 @@ optimizer = get_hyper_optimizer(
 | `native`（默认） | 使用原生 Muon NS 或已配置的 `zeropower_fn`。 |
 | `gram` | 在 CPU 和 CUDA 上使用上游 Torch 算子。 |
 | `gram_quack` | 在 Hopper／Blackwell CUDA 上对符合条件的矩阵使用 Quack，CPU 和其他 CUDA 设备走 `gram` 路径。 |
+| `ascendc` | 在 Ascend A2、A3、A5 上对符合条件的 64 对齐 BF16 矩阵执行融合迭代，其他输入走原生 Muon NS。 |
+
+`ascendc` 后端随目标 SoC 的 HyperParallel wheel 一起构建。[构建方式和输入要求](../../hyper_parallel/components/functional/README.md#fused-newton-schulz-for-muon)。
 
 两个 Gram 选项均依赖 `gram-newton-schulz`，支持 CPU 和 CUDA 输入。
 传入 NPU 张量会报设备错误，依赖加载、编译或执行失败也会直接报错。
@@ -217,7 +220,7 @@ optimizer = get_hyper_optimizer(
 工厂从实际生效的 Muon 参数组读取配置，包含默认值、`muon_kwargs` 和参数组覆盖值，
 自动沿用 `legacy`、`asym5` 或 `custom` 系数及 epsilon，并绑定各组所需的最长迭代序列。
 各组步数可以不同，但系数前缀必须一致、epsilon 必须相同；不兼容配置或同时传入
-`zeropower_fn` 时会报错。没有 Muon 参数时不会加载可选依赖。自动构造使用默认
+`zeropower_fn` 时会报错。没有 Muon 参数时不会加载可选后端。Gram 后端默认使用
 restart `(2,)` 并关闭编译。可以通过下方的手动工厂自定义 restart、kernel 选择和编译。
 
 Muon 通过 `zeropower_fn` 接收计算回调，也可以经

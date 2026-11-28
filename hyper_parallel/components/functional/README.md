@@ -35,11 +35,11 @@ which can be installed on a machine with the matching SoC, CANN, and Torch stack
 
 The build detects the SoC from the first visible NPU. Set
 `HYPER_PARALLEL_ASCEND_SOC` to build for a specific SoC or on a host without a
-visible NPU. Example targets are `Ascend910B3` and `Ascend950DT_9582`. Use a
-separate checkout for each SoC when installing editably. Automatic builds without
-a configured CANN environment, an installed Torch NPU stack, or a visible NPU
-produce the base package. Setting the SoC explicitly requires the build stack
-and allows compiling without a visible NPU.
+visible NPU. Example targets are `Ascend910B3`, `Ascend910_9391`, and
+`Ascend950DT_9582`. Use a separate checkout for each SoC when installing
+editably. Automatic builds without a configured CANN environment, an installed
+Torch NPU stack, or a visible NPU produce the base package. Setting the SoC
+explicitly requires the build stack and allows compiling without a visible NPU.
 
 ```python
 import torch
@@ -59,9 +59,23 @@ tile in full. The two halves within a diagonal tile retain their computed
 values, including any rounding differences.
 
 On Ascend 950, Fixpipe writes each off-diagonal tile and its transpose
-directly from the same L0C accumulator using the same rounding. On Ascend
-910B, Vector mirrors off-diagonal tiles while Cube advances to the next
+directly from the same L0C accumulator using the same rounding. On A2 and
+A3, Vector mirrors off-diagonal tiles while Cube advances to the next
 tile. Tail padding or an unaligned output can require extra Torch operations.
+
+### Fused Newton-Schulz for Muon
+
+Set `muon_ns_backend="ascendc"` in `get_hyper_optimizer` to use HyperParallel's
+experimental fused BF16 Newton-Schulz backend on Ascend A2 (910B), A3 (910_93xx), and
+A5 (950PR/950DT). The HyperParallel wheel built for the target SoC includes
+the backend and the symmetric GEMM operator. Each iteration computes
+`X @ Xᵀ` and `A @ A` with symmetric GEMM, evaluates the polynomial, and
+updates the matrix in one kernel launch. On 950, both products use Fixpipe
+dual writeback for off-diagonal tiles, and the two vector cores each process
+one half of the polynomial tile pair. Muon handles input normalization and
+reuses the work buffers across iterations. Matrices and matrix batches with both
+dimensions divisible by 64 and within the indexing and stride limits use the
+fused path. Other inputs use the native Torch iteration.
 
 ## MoE functions
 
